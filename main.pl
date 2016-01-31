@@ -16,7 +16,7 @@ $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 require "log.pl";
 
 my %OPTIONS = ( 
-                DD_BUILD  => "0.1.5",
+                DD_BUILD  => "0.1.6",
                 DEBUG     => 1,
 		);
 my $SOCKET; #Main Socket
@@ -487,44 +487,44 @@ sub register_player #\%source
 
 sub unregister_player #\%source
 {
-   #take leaving players out of the hash pool
-   #This does not disconnect the player as the player may be connected to a hub
-   #client that accepts multiple connections
+	#take leaving players out of the hash pool
+   	#This does not disconnect the player as the player may be connected to a hub
+   	#client that accepts multiple connections
 
-   my $source = $_[0];
-   my $i;
+   	my $source = $_[0];
+   	my $i;
 
-   return if (!$source);
+   	return if (!$source);
 
-   for(my $i = 0; $i < scalar @CPOOL; $i++)
-   {
-      if($CPOOL[$i] == $source)
-      {
-         if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
-	 global_msg(sprintf("%s on Team %s disconnected from game",$$source{nickname},$$source{team}));
-	 if($$source{team} == 1) {
-		#Once checks in place check if player dropping is flag carrier and reset flag
-	 	$CTFSTATE{TeamOnePlayers}--;
-		if($$source{nickname} eq $CTFSTATE{TeamOneCarrier}) {
-			global_msg("Team 1 flag carrier disconnected with flag. Flag Reset");
-                        $CTFSTATE{TeamOneCarrier}    = "";
-                        $CTFSTATE{TeamOneFlagItem}   = "";
-                        $CTFSTATE{TeamOneFlagSector} = "";
-			team_msg(1,"RESETFLAG");
-		}
-	 }
-	 if($$source{team} == 2) {
-	 	$CTFSTATE{TeamTwoPlayers}--;
-		if($$source{nickname} eq $CTFSTATE{TeamTwoCarrier}) {
-			global_msg("Team 2 flag carrier disconnected with flag. Flag Reset");
-                        $CTFSTATE{TeamTwoCarrier}    = "";
-                        $CTFSTATE{TeamTwoFlagItem}   = "";
-                        $CTFSTATE{TeamTwoFlagSector} = "";
-			team_msg(2,"RESETFLAG");
-		} 
-	}
-         splice(@CPOOL, $i, 1);
-      }
+   	for(my $i = 0; $i < scalar @CPOOL; $i++)
+   	{	
+      		if($CPOOL[$i] == $source)
+      		{	
+         		if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
+	 		splice(@CPOOL, $i, 1);
+	 		global_msg(sprintf("%s on Team %s disconnected from game",$$source{nickname},$$source{team}));
+	 		if($$source{team} == 1) {
+				#Once checks in place check if player dropping is flag carrier and reset flag
+	 			$CTFSTATE{TeamOnePlayers}--;
+				if($$source{nickname} eq $CTFSTATE{TeamOneCarrier}) {
+					global_msg("Team 1 flag carrier disconnected with flag. Flag Reset");
+                        		$CTFSTATE{TeamOneCarrier}    = "";
+                        		$CTFSTATE{TeamOneFlagItem}   = "";
+                        		$CTFSTATE{TeamOneFlagSector} = "";
+					team_msg(1,"RESETFLAG");
+				}
+	 		}
+	 		if($$source{team} == 2) {
+	 			$CTFSTATE{TeamTwoPlayers}--;
+				if($$source{nickname} eq $CTFSTATE{TeamTwoCarrier}) {
+					global_msg("Team 2 flag carrier disconnected with flag. Flag Reset");
+                        		$CTFSTATE{TeamTwoCarrier}    = "";
+                        		$CTFSTATE{TeamTwoFlagItem}   = "";
+                        		$CTFSTATE{TeamTwoFlagSector} = "";
+					team_msg(2,"RESETFLAG");
+				} 
+			}
+    		}
    }
    
    #show_cpool();
