@@ -3,7 +3,7 @@
 A plugin for Vendetta Online
 
 #Install
-Put the csctf folder in your Vendetta online directory and start the game
+Put the csctf folder in your Vendetta online plugins directory and start the game
 
 #Commands
 
