@@ -13,7 +13,7 @@ use IPC::Open3;
 # uncomment to handle SIGPIPE yourself
 $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 
-require "log.pl";
+require "./log.pl";
 
 my %OPTIONS = ( 
                 DD_BUILD  => "0.1.6",
@@ -41,8 +41,6 @@ my %CTFSTATE = (
 	TeamTwoTimeout    => 0,
 );
 
-main();
-
 sub main()
 {
   if (!$OPTIONS{DEBUG})
@@ -63,7 +61,7 @@ sub game_init {
 	my $time;
 	
    	$time = time + (60 - (time % 60));
-    $MINUTE = Event->timer(at=>$time, interval=>60,hard=>1,cb=>\&game_minute);
+	$MINUTE = Event->timer(at=>$time, interval=>60,hard=>1,cb=>\&game_minute);
 }
 
 sub game_minute {
@@ -303,7 +301,7 @@ sub server_init()
   $SELECT = new IO::Select;
   $SOCKET = new IO::Socket::INET( Proto     => "tcp",
                                   Listen    => 1000,
-                                  LocalPort => "11000",
+                                  LocalPort => "10500",
                                   Reuse     => "1"
                                 );
   die "Could not create socket: $!\n" unless $SOCKET;
@@ -473,9 +471,7 @@ sub global_msg #\$msg
 
 sub register_player #\%source
 {
-  #old DD had irc_dcc which set up the connection and added them to a searchable hash
-  #but this incarnation of dd the connection is already made so We just need to add $source
-  #to @cpool so when needed we can find this player later
+  #add player to @cpool so when needed we can find this player later
   my $source = $_[0];
     
   $$source{ping} = time;
@@ -572,3 +568,4 @@ sub is_registered #\$nickname
    return 0;
 }
 
+main();
