@@ -1,9 +1,9 @@
---CrazySpence CTF 0.1.5
+--CrazySpence CTF 0.1.7
 --Testing plausibility of making a CTF game with lua
 
 csctf = {}
 
-csctf.version        = "0.1.5"
+csctf.version        = "0.1.7"
 csctf.on             = 0
 csctf.teamOneStation = 1299457 --Sedina D14
 csctf.teamTwoStation = 1082369 -- Bractus D9
@@ -69,6 +69,18 @@ function csctf.CTFSay(_,message)
 	csctfClient:Send("ACTION 7 " .. output)
 end
 
+function csctf.CTFHelp()
+    print("\12700ffffCSCTF is a game in a game, trying to recreate an experience like the VendettaTest CTF in Vendetta Online")
+	print"Team 1 home is Sedina D14, Team 1 players go to Bractus D9 and buy a piece of cargo and bring it to Sedina D14"
+	print("Team 2 home is Bractus D9, Team 2 players go to Sedina D14 and buy a piece if cargo and bring it to Bractus D9")
+	print("Only 1 flag per team is in play at a time, if the flagg is dropped you have 3 minutes to recover it before it resets")
+	print("Flag carrier loses the ability to turbo when carrying the flag, you must defend the carrier")
+	print("/ctfstart to start and join the game")
+	print("/ctfstop to stop and disconnect the game")
+	print("/ctfsay to talk ONLY to team members")
+	print("Keep in mind this is not perfect and workarounds may be possible, please play nice and have fun --CrazySpence\127o")	
+end
+	
 function csctf.GameLoop()
 	if csctf.on == 0 then
 		return
@@ -76,9 +88,9 @@ function csctf.GameLoop()
 	if csctf.hasEnemyFlag == 1 then
 		if GetActiveShipSpeed() > csctf.shipMaxSpeed then
 			csctf.turbooff()
-			if infiniturbo then --infini turbo plugin detection
-				infiniturbo.running = false
-			end
+--			if infiniturbo ~= nil then --infini turbo plugin detection
+--				infiniturbo.running = false
+--			end
 		end
 	end
 	csctf.gameLoopTimer:SetTimeout(25,csctf.GameLoop)
@@ -196,6 +208,7 @@ RegisterEvent(csctf.eventhandler, "PLAYER_HOME_CHANGED")
 RegisterUserCommand("ctfstart",csctf.CTFStart)
 RegisterUserCommand("ctfstop",csctf.CTFStop)
 RegisterUserCommand("ctfsay",csctf.CTFSay)
+RegisterUserCommand("ctfhelp",csctf.CTFHelp)
 
 --TCP stuff
 local TCP = dofile("tcpsock.lua")
@@ -272,7 +285,7 @@ end
 
 function csctf.Client_Init()
    if not csctfClient then
-      csctfClient = TCP.make_client("philtopia.com", "11000", csctf.Connected, csctf.Incoming, csctf.Disconnected)
+      csctfClient = TCP.make_client("philtopia.com", "10500", csctf.Connected, csctf.Incoming, csctf.Disconnected)
    else 
       csctf.output("CTF Client is already active")
    end
