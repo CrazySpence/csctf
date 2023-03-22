@@ -13,3 +13,5 @@ Put the csctf folder in your Vendetta online plugins directory and start the gam
 
 /ctfsay   Send a message to your team
 
+/ctfhelp Get a description of the game, home stations, what to do
+
