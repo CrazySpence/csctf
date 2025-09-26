@@ -1,620 +1,302 @@
-#!/usr/bin/perl
-#CrazySpence CTF Server side
-#This will log player captures, drops, pk's in an attempt to sanity check the game. Hopefully people would rather have fun than exploit the game but give history I doubt it
+--CrazySpence CTF 0.1.9
+--Testing plausibility of making a CTF game with lua
 
-use strict;
-use Event;
-use Socket;
-use IO::Select;
-use IO::Socket::INET;
-use warnings;
-use IPC::Open3;
-use DBD::mysql;
+csctf = {}
 
-# uncomment to handle SIGPIPE yourself
-$SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
+csctf.version        = "0.1.9"
+csctf.on             = 0
+csctf.teamOneStation = 1299457 --Sedina D14
+csctf.teamTwoStation = 1082369 -- Bractus D9
+csctf.shipMaxSpeed   = 0
+csctf.hasEnemyFlag   = 0
+csctf.enemyFlag      = 0
+csctf.enemyFlagId    = 0
+csctf.myFlagId       = 0
+csctf.myFlagTargetId = 0
+csctf.gameLoopTimer  = Timer()
+csctf.myTeam         = 0
+csctf.myStation      = 0
+csctf.enemyStation   = 0
 
-require "./log.pl";
+function csctf.turbooff() gkinterface.GKProcessCommand('+turbo 0') end
 
-my %OPTIONS = ( 
-        DD_BUILD  => "0.1.9",
-        DEBUG     => 1,
-		DB_HOST   => "localhost",
-		DB_PORT   => 3306,
-		DB_USER   => "csctf",
-		DB_PASS   => "csctf123!",
-		DB_DB     => "csctf"
-	);
-
-my $SOCKET; #Main Socket
-my $SELECT; 
-my $MINUTE; #minute timer
-my @CPOOL;  #Connection pool hashes
-my $SQL; #Database connection handler
-
-my %CTFSTATE = (
-	TeamOnePlayers    => 0,
-	TeamTwoPlayers    => 0,
-	TeamOneCarrier    => "",
-	TeamTwoCarrier    => "",
-	TeamOneScore      => 0,
-	TeamTwoScore      => 0,
-	TeamOneStation    => "Sedina D-14",
-	TeamTwoStation    => "Bractus D-9",
-    TeamOneFlagSector => "",
-	TeamTwoFlagSector => "",
-	TeamOneFlagItem   => "",
-	TeamTwoFlagItem   => "",
-	TeamOneTimeout    => 0,
-	TeamTwoTimeout    => 0,
-);
-
-sub main()
-{
-  if (!$OPTIONS{DEBUG})
-  {
-     fork and exit;
-  } 
-  do_log(sprintf('MAIN -> CTF Build %s', $OPTIONS{DD_BUILD}));
-  server_init(); #Start the CTF
-  db_init();
-  game_init(); #start timers
-  while (1) 
-  {
-    server_cycle();
-    Event::sweep();
-  }
-}
-
-sub db_init {
-    my $data_source;
-
-    #Connect to database
-    if ($OPTIONS{DEBUG}) { do_log("DB INIT -> Connecting to MySQL Database ") }
-    $data_source = sprintf('DBI:mysql:database=%s;host=%s;port=%d', $OPTIONS{DB_DB}, $OPTIONS{DB_HOST}, $OPTIONS{DB_PORT});
-    $SQL = DBI->connect($data_source, $OPTIONS{DB_USER}, $OPTIONS{DB_PASS});
-}
-
-sub game_init {
-	my $time;
+function csctf.output(input) 
+	local output
+	if csctf.on == 0 then
+		return
+	end
+	output = "\12700ffff-=CTF=- " .. input .. "\127o"
+	print(output)
+end
 	
-   	$time = time + (60 - (time % 60));
-	$MINUTE = Event->timer(at=>$time, interval=>60,hard=>1,cb=>\&game_minute);
-}
+function csctf.CTFStart()
+	csctf.Client_Init()
+	csctf.shipMaxSpeed = GetActiveShipMaxSpeed()
+	csctf.gameLoopTimer:SetTimeout(25,csctf.GameLoop)
+	csctf.on = 1
+end
 
-sub game_minute {
-	#Ping all connected clients
-  	my $pool;
-  
-  	foreach $pool (@CPOOL) {
-     		if ( (time - $$pool{ping}) > 180 ) {
-			#no response in 3 minutes
-	    		server_cleanup($$pool{handle});
-     		} else {
-			player_msg($pool,"PING");
-     		}	
-  	}
-	if($CTFSTATE{TeamOneFlagItem} ne "") {
-		if($CTFSTATE{TeamOneCarrier} ne "") {
-			$CTFSTATE{TeamOneTimeout} = time;
-		}
-		if ( (time - $CTFSTATE{TeamOneTimeout}) > 180 ) {
-			global_msg("Team 2's flag has been returned");
-			$CTFSTATE{TeamOneCarrier}    = "";
-                        $CTFSTATE{TeamOneFlagItem}   = "";
-                        $CTFSTATE{TeamOneFlagSector} = "";
-                        team_msg(1,"RESETFLAG");
-		}
-	}
-	if($CTFSTATE{TeamTwoFlagItem} ne "") {
-                if($CTFSTATE{TeamTwoCarrier} ne "") {
-                        $CTFSTATE{TeamTwoTimeout} = time;
-                }       
-                if ( (time - $CTFSTATE{TeamTwoTimeout}) > 180 ) {
-                        global_msg("Team 1's flag has been returned");
-                        $CTFSTATE{TeamTwoCarrier}    = "";   
-                        $CTFSTATE{TeamTwoFlagItem}   = "";
-                        $CTFSTATE{TeamTwoFlagSector} = "";
-                        team_msg(2,"RESETFLAG");
-                }
-        }
-
-	#Check SQL status, reconnect if needed
-	if(!$SQL) {
-              if ($OPTIONS{DEBUG}) { do_log("Error -> MySQL Database connection lost") }
-              db_init();   
-        }
-}
-
-sub game_action {
-	my $source = $_[0];
-	my $event = $_[1];
-	my $message = $_[2];
-	my @arguments;
+function csctf.CTFStop()
+	if csctf.hasEnemyFlag == 1 then
+		JettisonAll()
+		csctf.hasEnemyFlag = 0
+		csctf.enemyFlagId  = 0
+		csctfClient:Send("ACTION 5 " .. GetPlayerName())	--flag drop		
+		csctf.output("Flag ejected, do /ctfstop again to stop client functions")
+		return	
+	end
+	csctf.shipMaxSpeed   = 0
+	csctf.hasEnemyFlag   = 0
+	csctf.enemyFlag      = 0
+	csctf.enemyFlagId    = 0
+	csctf.myFlagId       = 0
+	csctf.myFlagTargetId = 0
+	csctf.myTeam         = 0
+	csctf.myStation      = 0
+	csctf.enemyStation   = 0
 	
-	if ($event eq "1") {
-                #Travel Log
-		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s traveled to %s",$$source{nickname},$message)) }
-		$$source{sector} = $message;
-		if($CTFSTATE{TeamOneCarrier} eq $$source{nickname}) {
-			$CTFSTATE{TeamOneFlagSector} = $$source{sector};
-		}
-		if($CTFSTATE{TeamTwoCarrier} eq $$source{nickname}) {
-                        $CTFSTATE{TeamTwoFlagSector} = $$source{sector};
-                }
-	}
+	csctf.Client_stop()
+    csctf.output("You have left CTF. To rejoin use /ctfstart")
+	csctf.on             = 0
+end
+
+function csctf.CTFSay(_,message)
+	local output
+	if csctf.on == 0 then
+		return
+	end
+	output = "[Team " .. csctf.myTeam .. ":" .. ShortLocationStr(GetCurrentSectorid()) .. " ] <" .. GetPlayerName() .. "> " .. table.concat(message," ")
+	csctfClient:Send("ACTION 7 " .. output)
+end
+
+function csctf.CTFHelp()
+    print("\12700ffffCSCTF is a game in a game, trying to recreate an experience like the VendettaTest CTF in Vendetta Online")
+	print("Team 1 home is Sedina D14, Team 1 players go to Bractus D9 and buy a piece of cargo and bring it to Sedina D14")
+	print("Team 2 home is Bractus D9, Team 2 players go to Sedina D14 and buy a piece if cargo and bring it to Bractus D9")
+	print("Only 1 flag per team is in play at a time, if the flagg is dropped you have 3 minutes to recover it before it resets")
+	print("Flag carrier loses the ability to turbo when carrying the flag, you must defend the carrier")
+	print("/ctfstart to start and join the game")
+	print("/ctfstop to stop and disconnect the game")
+	print("/ctfsay to talk ONLY to team members")
+	print("Keep in mind this is not perfect and workarounds may be possible, please play nice and have fun --CrazySpence\127o")	
+end
 	
-	if ($event eq "2") {
-                #PK Detected
-		@arguments = split(/\:+/,$message);
-		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s killed %s",$arguments[1],$arguments[0])) }
-		$$source{pk} = $$source{pk} + 1;
-		#At somepoint check if killing an enemy flag carrier and increase a "defense" stat
-	} 
+function csctf.GameLoop()
+	if csctf.on == 0 then
+		return
+	end
+	if csctf.hasEnemyFlag == 1 then
+		if GetActiveShipSpeed() > csctf.shipMaxSpeed then
+			csctf.turbooff()
+--			if infiniturbo ~= nil then --infini turbo plugin detection
+--				infiniturbo.running = false
+--			end
+		end
+	end
+	csctf.gameLoopTimer:SetTimeout(25,csctf.GameLoop)
+end
+
+function csctf.eventhandler(event,data,data1)
+	if csctf.on == 0 then
+		return
+	end
+	local shipInventory
+	local stationLocation
+	local myChar = GetPlayerName()
+	if event == "LEAVING_STATION" then
+		csctf.shipMaxSpeed = GetActiveShipMaxSpeed()
+		if csctf.enemyFlag == 0 then
+			JettisonAll()
+		end	
+	end
+	--Detect cargo Grab,Cargo purchases, Cargo Drops
+    if event == "INVENTORY_ADD" then 
+		local itemname = GetInventoryItemName(data)
+		if PlayerInStation() == true then
+			if GetStationLocation() == csctf.enemyStation then --If no flag is in play and you buy a commodity at enemy station it becomes flag
+				if csctf.enemyFlag == 0 then
+					if GetInventoryItemClassType(data) == 0 then -- ores and commodity's show as 0, ships 1, addons 2. We want 0
+						csctf.enemyFlag    = itemname
+						csctf.enemyFlagId  = data
+            			csctf.hasEnemyFlag = 1
+						csctfClient:Send("ACTION 4 " .. csctf.enemyFlag)	--flag Steal
+						RequestLaunch()
+					end	
+				end
+			end
+		else
+			if itemname == csctf.enemyFlag then
+				csctf.hasEnemyFlag = 1
+				csctf.enemyFlagId  = data
+				csctfClient:Send("ACTION 4 " .. csctf.enemyFlag)	--flag Steal
+			else
+				--Drop it, you're playing CTF not trading!
+				--Also since I'm using cargo as a flag this is a small countermeasure against cheating.
+				JettisonAll()
+			end
+		end
+	end
+    if event == "INVENTORY_REMOVE" then
+		if data == csctf.enemyFlagId then
+			csctf.hasEnemyFlag = 0
+			csctf.enemyFlagId  = 0
+			csctfClient:Send("ACTION 5 " .. myChar)	--flag drop	
+		end
+	end
 	
-	if ($event eq "3") {
-		#Flag Carrier died
-                if($$source{team} == 1) {
-                        if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
-                        global_msg(sprintf("%s has dropped Team 2's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamOneFlagItem},$$source{sector}));
-                        $CTFSTATE{TeamOneCarrier} = "";
-                }
-                if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
-                        global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
-                        $CTFSTATE{TeamTwoCarrier} = "";
-                }
-	}
+	--If you die and have the flag kill the hasEnemyFlag variable
+	if event == "PLAYER_DIED" then
+		if data == GetCharacterID() then
+			if csctf.hasEnemyFlag == 1 then
+				csctf.hasEnemyFlag = 0
+				csctf.enemyFlagId  = 0
+				csctfClient:Send("ACTION 3 " .. myChar)	--flag drop		
+			end
+		end
+		if data == GetCharacterID() then
+			if(data1 == data) then
+				return --Suicide, TODO: when stats are eventually recorded this must notify server of suicide
+			end
+			csctfClient:Send("ACTION 2 " .. GetPlayerName(data) .. ":" .. GetPlayerName(data1)) --pk record
+		end
+	end
 	
-	if ($event eq "4") {
-		#Flag Created or stolen
-		if ($$source{team} == 1) {
-			if($CTFSTATE{TeamOneFlagItem} eq "") {
-				#new flag
-				if($$source{sector} ne $CTFSTATE{TeamTwoStation}) {
-					do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamTwoStation});
-					player_msg("RESETFLAG");
-					player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-					return;
-				} 
-			} else {
-				if($CTFSTATE{TeamOneFlagItem} ne $message) {
-					do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamOneFlagItem}));
-					player_msg("RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-					return;
-				}
-				if($CTFSTATE{TeamOneCarrier} ne "") {
-					do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-					return;
-				}
-				if($$source{sector} ne $CTFSTATE{TeamOneFlagSector}) {
-					do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamOneFlagSector}));
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-                                        return;
-                                }
-			}
-			global_msg(sprintf("%s has stolen Team 2's flag!",$$source{nickname}));
-			$CTFSTATE{TeamOneFlagItem}   = $message;
-			$CTFSTATE{TeamOneFlagSector} = $$source{sector};
-			$CTFSTATE{TeamOneCarrier}    = $$source{nickname};
-			team_msg(1,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-			$CTFSTATE{TeamOneTimeout} = time;
-		}
-		if($$source{team} == 2) {
-			if($CTFSTATE{TeamTwoFlagItem} eq "") {
-                                #new flag
-                                if($$source{sector} ne $CTFSTATE{TeamOneStation}) {
-                                        do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamOneStation});
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                        } else {
-				if($CTFSTATE{TeamTwoFlagItem} ne $message) {
-                                        do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamTwoFlagItem}));
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-					return;
-                                }
-				if($CTFSTATE{TeamTwoCarrier} ne "") {
-                                        do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                                if($$source{sector} ne $CTFSTATE{TeamTwoFlagSector}) {
-                                        do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamTwoFlagSector}));
-					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                        }
-			global_msg(sprintf("%s has stolen Team 1's flag!",$$source{nickname}));
-			$CTFSTATE{TeamTwoFlagItem}   = $message;
-			$CTFSTATE{TeamTwoFlagSector} = $$source{sector};
-			$CTFSTATE{TeamTwoCarrier}    = $$source{nickname};
-			$CTFSTATE{TeamTwoTimeout} = time;
-			team_msg(2,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-		}
-
-	}
+	if event == "ENTERED_STATION" then
+		if csctf.hasEnemyFlag == 1 then
+			if GetStationLocation() == csctf.myStation then
+				csctfClient:Send("ACTION 6 " .. myChar .. ":" .. csctf.enemyFlag)	--flag Cap
+				--reset variables
+				csctf.hasEnemyFlag = 0
+				csctf.enemyFlagId  = 0
+				csctf.enemyFlag    = 0
+			else
+				RequestLaunch() --Stop trying to make stop overs you lazy carrier
+			end
+		end
+	end
 	
-	if ($event eq "5") {
-		#Flag Dropped
-		if($$source{team} == 1) {
-			if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
-			global_msg(sprintf("%s has dropped Team 2's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamOneFlagItem},$$source{sector}));
-			$CTFSTATE{TeamOneCarrier} = ""; 
-		}
-		if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
-			global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
-			$CTFSTATE{TeamTwoCarrier} = "";
-		}
-	}
-	
-	if($event eq "6") {
-		#Flag Captured
-		if($$source{team} == 1) {
-                        if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
-			global_msg(sprintf("%s has captured Team 2's flag!",$$source{nickname}));
-			$CTFSTATE{TeamOneScore}++;
-			$CTFSTATE{TeamOneCarrier}    = "";
-			$CTFSTATE{TeamOneFlagItem}   = "";
-			$CTFSTATE{TeamOneFlagSector} = "";
-                	team_msg(1,"RESETFLAG");
-		}
-                if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
-                        global_msg(sprintf("%s has captured Team 1's flag!",$$source{nickname}));
-                        $CTFSTATE{TeamTwoScore}++;
-			$CTFSTATE{TeamTwoCarrier}    = "";
-			$CTFSTATE{TeamTwoFlagItem}   = "";
-			$CTFSTATE{TeamTwoFlagSector} = "";
-			team_msg(2,"RESETFLAG");
-                }
-		global_msg(sprintf("-=Scoreboard=- Team 1: %s Team 2: %s",$CTFSTATE{TeamOneScore},$CTFSTATE{TeamTwoScore}));
-	}
-	
-	if($event eq "7") { #Team Chat
-		team_msg($$source{team},$message);
-	}
-}
+	if event == "PLAYER_ENTERED_SECTOR" then
+		if data == GetCharacterID() then
+           csctfClient:Send("ACTION 1 " .. ShortLocationStr(GetCurrentSectorid()))
+	    end
+		if csctf.enemyFlag == 0 then
+   			JettisonAll()
+        end
+	end
+	if event == "PLAYER_HOME_CHANGED" then -- Alert user of proper game ethics.
+		if csctf.myTeam == "1" then
+			if(SystemNames[GetSystemID(GetHomeStation())]) == "Bractus" then
+				csctf.HomeAlert(1)
+			end		
+		end
+		if csctf.myTeam == "2" then
+			if(SystemNames[GetSystemID(GetHomeStation())]) == "Sedina" then
+				csctf.HomeAlert(2)
+			end		
+		end	
+	end	
+end
 
-sub assign_team {
-	#Basic round robin team assignments. Worry about race/guild assigns later if the whole thing actually works
-	my $source = $_[0];
-	my $team1 = "";
-	my $team2 = "";
-    my $pool;
-	my $query; #SQL Query
-    my $row; #Table row data
+RegisterEvent(csctf.eventhandler, "LEAVING_STATION")
+RegisterEvent(csctf.eventhandler, "INVENTORY_ADD")
+RegisterEvent(csctf.eventhandler, "INVENTORY_REMOVE")
+RegisterEvent(csctf.eventhandler, "PLAYER_DIED")
+RegisterEvent(csctf.eventhandler, "ENTERED_STATION")
+RegisterEvent(csctf.eventhandler, "PLAYER_ENTERED_SECTOR")
+RegisterEvent(csctf.eventhandler, "PLAYER_HOME_CHANGED")
 
-	#Does player have a team already?
-	$query = $SQL->prepare("SELECT team FROM player_stat WHERE name=?");
-	$query->execute($$source{nickname});
+RegisterUserCommand("ctfstart",csctf.CTFStart)
+RegisterUserCommand("ctfstop",csctf.CTFStop)
+RegisterUserCommand("ctfsay",csctf.CTFSay)
+RegisterUserCommand("ctfhelp",csctf.CTFHelp)
 
-	if($query->rows()) {
-		#player has team, assign it 
-		$row = $query->fetchrow_hashref();
-		$$source{team} = $$row{team};
-		if($$row{team} == 1) {
-            $CTFSTATE{TeamOnePlayers}++;
-			player_msg($source,"SETTEAM 1");
-			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-		} else {
-			$CTFSTATE{TeamTwoPlayers}++;
-			player_msg($source,"SETTEAM 2");
-			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-		}
-	} else {
-		#No team, check team count and add new player
-		if($CTFSTATE{TeamOnePlayers} > $CTFSTATE{TeamTwoPlayers}) {
-			$$source{team} = 2;
-			$CTFSTATE{TeamTwoPlayers}++;
-			player_msg($source,"SETTEAM 2");
-			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-		} else {
-			$$source{team} = 1;	
-			$CTFSTATE{TeamOnePlayers}++;
-			player_msg($source,"SETTEAM 1");
-            player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-		}
-		#add player and team assignment to table
-		$query = $SQL->prepare("INSERT INTO player_stat SET name=?,team=?");
-		$query->execute($$source{nickname},$$source{team});
-	}
-	foreach $pool (@CPOOL) {
-		if($$pool{team} == 1) {
-			$team1 = sprintf("%s\"%s\" ",$team1,$$pool{nickname});
-		}
-		if($$pool{team} == 2) {
-            $team2 = sprintf("%s\"%s\" ",$team2,$$pool{nickname});
-        }
-	}
-	#output team rosters to new player
-	player_msg($source,"Team 1");
-	player_msg($source,$team1);
-	player_msg($source,"Team 2");
-	player_msg($source,$team2);
-	#send Team join to all players
-	global_msg(sprintf("%s has joined Team %s",$$source{nickname},$$source{team}));
-}
+--TCP stuff
+local TCP = dofile("tcpsock.lua")
 
-sub server_init() 
-{
-  $SELECT = new IO::Select;
-  $SOCKET = new IO::Socket::INET( Proto     => "tcp",
-                                  Listen    => 1000,
-                                  LocalPort => "10500",
-                                  Reuse     => "1"
-                                );
-  die "Could not create socket: $!\n" unless $SOCKET;
-  $SELECT->add($SOCKET);
-}
+csctfClient = nil
 
-sub server_cycle()
-{
-  my $NEW_CONNECTION;
-  my @ready;
-  my $handle;
-  my $data;
-  
-  @ready = $SELECT->can_read(.1);
-  
-  foreach $handle (@ready)
-  {
-    if ($handle == $SOCKET) #new connection time
-    {
-      $NEW_CONNECTION = $SOCKET->accept();
-      $SELECT->add($NEW_CONNECTION);
-    } else
-    {
-      if(sysread($handle, $data, 512) == 0) #read it or close it
-      {
-        #report error and cleanup any players associated with that connection 
-        if ($OPTIONS{DEBUG}) { do_log("ERROR -> READ failed on socket closing connection\n") }
-        server_cleanup($handle);
-      } else {
-        server_recieve($handle,$data);
-      }
-  
-   }
- }
-}
+function csctf.Connected(conn,success)
+   if conn then
+	   csctf.output("Connecting to CTF server...")
+	   conn:Send("VERSION " .. csctf.version)
+	   conn:Send("REGISTER " .. GetPlayerName())
+   else
+	   csctf.output("Connection Failed")
+	   csctfClient = nil
+   end
+end
 
-sub server_recieve #\$handle,$data
-{
-   my $handle = $_[0];
-   my $data = $_[1];
-   my @message;
-   my %source;
-   my $message;
-   my $pool;
-   
-   @message = split(/\s+/,$data);
-   if ($message[0] eq "REGISTER") {
-       if ($message[1] && !is_registered($message[1])) {
-          $source{handle} = $handle;
-          $source{nickname} = substr($data,(index($data, "",length(sprintf("REGISTER ")))));
-          register_player(\%source);
-       } else {
-	      send($handle,"ERROR: Registration failed due to nickname error\n",0);
-       }
-          	
-   }
-   if ($message[0] eq "ACTION") { #Game Message recieved
-      if (getsource($handle)) {
-         game_action(getsource($handle),$message[1],substr($data,(index($data, "",length(sprintf("ACTION %s ",$message[1]))))));  	
-      } else {
-	     send($handle,"ERROR: You are not Registered\n",0);
-	      if ($OPTIONS{DEBUG}) { do_log("ERROR -> Unregistered player sending Action, disconnecting") }
-	     server_cleanup($handle);   
-      }
-   }
-   if ($message[0] eq "LOGOUT") {
-      server_cleanup($handle);   	
-   }
-   if ($message[0] eq "PONG") {
-      server_pong(getsource($handle));	
-   }
-   
-}
+function csctf.Disconnected()
+   csctf.output("Connection to CTF server interrupted")
+   if csctfClient then
+      csctfClient = nil
+   end
+   if csctf.on == 1 then
+	   csctf.on = 0
+   end	   
+end
 
-sub server_pong {
-   my $source = $_[0];
+function csctf.HomeAlert(team)
+	if team == 1 then
+		csctf.output("Team One members should home in Odia or Sedina. Homing in Bractus gives an unfair advantage")
+	end
+	if team == 2 then
+		csctf.output("Team Two members should home in Odia or Bractus. Homing in Sedina gives an unfair advantage")
+	end
+end
 
-   $$source{ping} = time;
-	
-}
+function csctf.Incoming(conn,line)
+  	if line == "PING" then 
+    	csctfClient:Send("PONG")
+	elseif string.sub(line,1,7) == "GLOBAL " then
+		csctf.output(string.sub(line,8))
+  	elseif string.sub(line,1,8) == "SETTEAM " then
+		csctf.myTeam = string.sub(line,9)
+		if(csctf.myTeam == "1") then
+			csctf.myStation    = csctf.teamOneStation
+			csctf.enemyStation = csctf.teamTwoStation
+			if(SystemNames[GetSystemID(GetHomeStation())]) == "Bractus" then
+				csctf.HomeAlert(1)
+			end				
+		else
+			csctf.myStation    = csctf.teamTwoStation
+			csctf.enemyStation = csctf.teamOneStation
+			if(SystemNames[GetSystemID(GetHomeStation())]) == "Sedina" then
+				csctf.HomeAlert(2)
+			end	
+		end		
+		csctf.output("Assigned to team " .. csctf.myTeam)
+	    csctfClient:Send("ACTION 1 " .. ShortLocationStr(GetCurrentSectorid())) --Initialize location with server state
+	elseif string.sub(line,1,9) == "FLAGITEM " then
+		if string.sub(line,10) == "" then
+			csctf.enemyFlag = 0
+		else	
+			csctf.enemyFlag = string.sub(line,10)
+		end	
+	elseif line == "RESETFLAG" then
+		csctf.hasEnemyFlag = 0
+		csctf.enemyFlagId  = 0
+		csctf.enemyFlag    = 0
+		JettisonAll()
+	else
+    	csctf.output(line)
+   	end
+end
 
-sub server_cleanup #\$handle
-{
-    #if a client disconnects compare its handle against players and remove any
-    #matching players from the CPOOL
-    my $handle = $_[0];
-    my @DISCARD;
-    my $discard;
-    my $pool;
+function csctf.Client_Init()
+   if not csctfClient then
+      csctfClient = TCP.make_client("philtopia.com", "10500", csctf.Connected, csctf.Incoming, csctf.Disconnected)
+   else 
+      csctf.output("CTF Client is already active")
+   end
+end
 
-    foreach $pool (@CPOOL)
-    {
- #      printf("%s\n",$$pool{nickname});
-       if($handle == $$pool{handle}) {
-          #Originally I had unregister_player here but that changes the length of
-          #@CPOOL and then players are missed so I created a DISCARD array for everyone
-          #I need to get rid of.
-          push @DISCARD, $pool;
-       }
-    }
-    foreach $discard (@DISCARD) {
-       unregister_player($discard); #Good bye!
-    }
-    $SELECT->remove($handle);
-    $handle->close;
-}
+function csctf.Client_stop()
+   if csctfClient then
+      csctfClient:Send("LOGOUT\n")
+   end
+end
 
-sub player_msg # \%source,$msg
-{
-   my $source = $_[0];
-   my $msg    = $_[1];
-   my $nickname;
-   my @lines;
-   my $line;
-   my $handle;
-   
-   @lines = split(/[\n\r]+/, $msg);
- 
-   return if (!$source);
-
-   if($$source{handle})
-   {
-      foreach $line (@lines)
-      {
-         if ($OPTIONS{DEBUG}) { do_log(sprintf("SEND %s -> %s", $$source{nickname}, $line)) }
-         if (!send($$source{handle}, $line . "\n", 0))
-         {
-           if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-          server_cleanup($$source{handle});
-         }
-      }
-   }
-}   
-
-sub team_msg #\$msg
-{
-        my $team   = $_[0];
-        my $msg    = $_[1];
-        my $pool;
-
-        if ($OPTIONS{DEBUG}) { do_log(sprintf("TEAM %s -> %s",$team, $msg)) }
-        foreach $pool (@CPOOL) {
-		if($team == $$pool{team}) {
-                	if(!send($$pool{handle},$msg . "\n", 0))
-                	{
-                        	if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-                        	server_cleanup($$pool{handle});
-                	}
-		}
-        }
-}
-
-sub global_msg #\$msg
-{
-   	my $msg    = $_[0];
-   	my $pool;
-   
-	if ($OPTIONS{DEBUG}) { do_log(sprintf("GLOBAL -> %s",$msg)) }
-   	foreach $pool (@CPOOL) {
-    		if(!send($$pool{handle}, "GLOBAL " . $msg . "\n", 0))
-    		{
-       			if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-       			server_cleanup($$pool{handle});
-    		}		
-   	}
-} 
-
-sub register_player #\%source
-{
-  #add player to @cpool so when needed we can find this player later
-  my $source = $_[0];
-    
-  $$source{ping} = time;
-  push @CPOOL, $source;
-  player_msg($source,"Logged In.");
-  assign_team($source);
-  #show_cpool();
-}  
-
-sub unregister_player #\%source
-{
-	#take leaving players out of the hash pool
-   	#This does not disconnect the player as the player may be connected to a hub
-   	#client that accepts multiple connections
-
-   	my $source = $_[0];
-   	my $i;
-
-   	return if (!$source);
-
-   	for(my $i = 0; $i < scalar @CPOOL; $i++)
-   	{	
-      		if($CPOOL[$i] == $source)
-      		{	
-         		if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
-	 		splice(@CPOOL, $i, 1);
-	 		global_msg(sprintf("%s on Team %s disconnected from game",$$source{nickname},$$source{team}));
-	 		if($$source{team} == 1) {
-				#Once checks in place check if player dropping is flag carrier and reset flag
-	 			$CTFSTATE{TeamOnePlayers}--;
-				if($$source{nickname} eq $CTFSTATE{TeamOneCarrier}) {
-					global_msg("Team 1 flag carrier disconnected with flag. Flag Reset");
-                        		$CTFSTATE{TeamOneCarrier}    = "";
-                        		$CTFSTATE{TeamOneFlagItem}   = "";
-                        		$CTFSTATE{TeamOneFlagSector} = "";
-					team_msg(1,"RESETFLAG");
-				}
-	 		}
-	 		if($$source{team} == 2) {
-	 			$CTFSTATE{TeamTwoPlayers}--;
-				if($$source{nickname} eq $CTFSTATE{TeamTwoCarrier}) {
-					global_msg("Team 2 flag carrier disconnected with flag. Flag Reset");
-                        		$CTFSTATE{TeamTwoCarrier}    = "";
-                        		$CTFSTATE{TeamTwoFlagItem}   = "";
-                        		$CTFSTATE{TeamTwoFlagSector} = "";
-					team_msg(2,"RESETFLAG");
-				} 
-			}
-    		}
-   }
-   
-   #show_cpool();
-   return;
-}
-
-sub show_cpool
-{
-   #displays nicks in cpool so I can tell if it is deleting items properly
-   my $pool;
-   foreach $pool (@CPOOL)
-   {
-      printf("connection: %s\n",$$pool{nickname});
-   }
-   return;
-}
-
-sub getsource #\$id
-{
-   my $handle = $_[0];
-   my $pool;
-
-   foreach $pool (@CPOOL)
-   {
-      if($$pool{handle} == $handle)
-      {
-         return $pool;
-      }
-   }
-   return 0;
-}
-
-sub is_registered #\$nickname
-{
-   my $nickname = $_[0];
-   my $pool;
-
-   foreach $pool (@CPOOL)
-   {
-      if(lc($$pool{nickname}) eq lc($nickname))
-      {
-         return 1;
-      }
-   }
-   return 0;
-}
-
-main();
+--Exit handlers
+RegisterEvent(csctf.CTFStop,"UNLOAD_INTERFACE")
+RegisterEvent(csctf.CTFStop,"PLAYER_LOGGED_OUT")
