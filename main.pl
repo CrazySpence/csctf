@@ -9,6 +9,7 @@ use IO::Select;
 use IO::Socket::INET;
 use warnings;
 use IPC::Open3;
+use DBD::mysql;
 
 # uncomment to handle SIGPIPE yourself
 $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
@@ -16,13 +17,20 @@ $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 require "./log.pl";
 
 my %OPTIONS = ( 
-                DD_BUILD  => "0.1.6",
-                DEBUG     => 1,
-		);
+        DD_BUILD  => "0.1.9",
+        DEBUG     => 1,
+		DB_HOST   => "localhost",
+		DB_PORT   => 3306,
+		DB_USER   => "",
+		DB_PASS   => "",
+		DB_DB     => ""
+	);
+
 my $SOCKET; #Main Socket
 my $SELECT; 
 my $MINUTE; #minute timer
 my @CPOOL;  #Connection pool hashes
+my $SQL; #Database connection handler
 
 my %CTFSTATE = (
 	TeamOnePlayers    => 0,
@@ -33,7 +41,7 @@ my %CTFSTATE = (
 	TeamTwoScore      => 0,
 	TeamOneStation    => "Sedina D-14",
 	TeamTwoStation    => "Bractus D-9",
-        TeamOneFlagSector => "",
+    TeamOneFlagSector => "",
 	TeamTwoFlagSector => "",
 	TeamOneFlagItem   => "",
 	TeamTwoFlagItem   => "",
@@ -49,12 +57,22 @@ sub main()
   } 
   do_log(sprintf('MAIN -> CTF Build %s', $OPTIONS{DD_BUILD}));
   server_init(); #Start the CTF
+  db_init();
   game_init(); #start timers
   while (1) 
   {
     server_cycle();
     Event::sweep();
   }
+}
+
+sub db_init {
+    my $data_source;
+
+    #Connect to database
+    if ($OPTIONS{DEBUG}) { do_log("DB INIT -> Connecting to MySQL Database ") }
+    $data_source = sprintf('DBI:mysql:database=%s;host=%s;port=%d', $OPTIONS{DB_DB}, $OPTIONS{DB_HOST}, $OPTIONS{DB_PORT});
+    $SQL = DBI->connect($data_source, $OPTIONS{DB_USER}, $OPTIONS{DB_PASS});
 }
 
 sub game_init {
@@ -70,10 +88,10 @@ sub game_minute {
   
   	foreach $pool (@CPOOL) {
      		if ( (time - $$pool{ping}) > 180 ) {
-			#no response in 3 minutes
+			    #no response in 3 minutes
 	    		server_cleanup($$pool{handle});
      		} else {
-			player_msg($pool,"PING");
+			     player_msg($pool,"PING");
      		}	
   	}
 	if($CTFSTATE{TeamOneFlagItem} ne "") {
@@ -83,9 +101,9 @@ sub game_minute {
 		if ( (time - $CTFSTATE{TeamOneTimeout}) > 180 ) {
 			global_msg("Team 2's flag has been returned");
 			$CTFSTATE{TeamOneCarrier}    = "";
-                        $CTFSTATE{TeamOneFlagItem}   = "";
-                        $CTFSTATE{TeamOneFlagSector} = "";
-                        team_msg(1,"RESETFLAG");
+            $CTFSTATE{TeamOneFlagItem}   = "";
+            $CTFSTATE{TeamOneFlagSector} = "";
+            team_msg(1,"RESETFLAG");
 		}
 	}
 	if($CTFSTATE{TeamTwoFlagItem} ne "") {
@@ -100,6 +118,12 @@ sub game_minute {
                         team_msg(2,"RESETFLAG");
                 }
         }
+
+	#Check SQL status, reconnect if needed
+	if(!$SQL) {
+              if ($OPTIONS{DEBUG}) { do_log("Error -> MySQL Database connection lost") }
+              db_init();   
+        }
 }
 
 sub game_action {
@@ -109,19 +133,19 @@ sub game_action {
 	my @arguments;
 	
 	if ($event eq "1") {
-                #Travel Log
+        #Travel Log
 		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s traveled to %s",$$source{nickname},$message)) }
 		$$source{sector} = $message;
 		if($CTFSTATE{TeamOneCarrier} eq $$source{nickname}) {
 			$CTFSTATE{TeamOneFlagSector} = $$source{sector};
 		}
 		if($CTFSTATE{TeamTwoCarrier} eq $$source{nickname}) {
-                        $CTFSTATE{TeamTwoFlagSector} = $$source{sector};
-                }
+        	$CTFSTATE{TeamTwoFlagSector} = $$source{sector};
+        }
 	}
 	
 	if ($event eq "2") {
-                #PK Detected
+        #PK Detected
 		@arguments = split(/\:+/,$message);
 		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s killed %s",$arguments[1],$arguments[0])) }
 		$$source{pk} = $$source{pk} + 1;
@@ -130,16 +154,16 @@ sub game_action {
 	
 	if ($event eq "3") {
 		#Flag Carrier died
-                if($$source{team} == 1) {
-                        if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
-                        global_msg(sprintf("%s has dropped Team 2's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamOneFlagItem},$$source{sector}));
-                        $CTFSTATE{TeamOneCarrier} = "";
-                }
-                if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
-                        global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
-                        $CTFSTATE{TeamTwoCarrier} = "";
-                }
+        if($$source{team} == 1) {
+        	if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
+            global_msg(sprintf("%s has dropped Team 2's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamOneFlagItem},$$source{sector}));
+            $CTFSTATE{TeamOneCarrier} = "";
+        }
+        if($$source{team} == 2) {
+        	if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
+            global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
+            $CTFSTATE{TeamTwoCarrier} = "";
+        }
 	}
 	
 	if ($event eq "4") {
@@ -157,21 +181,21 @@ sub game_action {
 				if($CTFSTATE{TeamOneFlagItem} ne $message) {
 					do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamOneFlagItem}));
 					player_msg("RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 					return;
 				}
 				if($CTFSTATE{TeamOneCarrier} ne "") {
 					do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+                   player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 					return;
 				}
 				if($$source{sector} ne $CTFSTATE{TeamOneFlagSector}) {
 					do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamOneFlagSector}));
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
-                                        return;
-                                }
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+                   return;
+                }
 			}
 			global_msg(sprintf("%s has stolen Team 2's flag!",$$source{nickname}));
 			$CTFSTATE{TeamOneFlagItem}   = $message;
@@ -182,33 +206,33 @@ sub game_action {
 		}
 		if($$source{team} == 2) {
 			if($CTFSTATE{TeamTwoFlagItem} eq "") {
-                                #new flag
-                                if($$source{sector} ne $CTFSTATE{TeamOneStation}) {
-                                        do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamOneStation});
+            	#new flag
+                if($$source{sector} ne $CTFSTATE{TeamOneStation}) {
+                	do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamOneStation});
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                        } else {
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+                    return;
+                }
+            } else {
 				if($CTFSTATE{TeamTwoFlagItem} ne $message) {
-                                        do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamTwoFlagItem}));
+                	do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamTwoFlagItem}));
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
 					return;
-                                }
+                }
 				if($CTFSTATE{TeamTwoCarrier} ne "") {
-                                        do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
+                	do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                                if($$source{sector} ne $CTFSTATE{TeamTwoFlagSector}) {
-                                        do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamTwoFlagSector}));
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+                    return;
+                }
+                if($$source{sector} ne $CTFSTATE{TeamTwoFlagSector}) {
+                	do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamTwoFlagSector}));
 					player_msg($source,"RESETFLAG");
-                                        player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                                        return;
-                                }
-                        }
+                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+                    return;
+                }
+            }
 			global_msg(sprintf("%s has stolen Team 1's flag!",$$source{nickname}));
 			$CTFSTATE{TeamTwoFlagItem}   = $message;
 			$CTFSTATE{TeamTwoFlagSector} = $$source{sector};
@@ -227,7 +251,7 @@ sub game_action {
 			$CTFSTATE{TeamOneCarrier} = ""; 
 		}
 		if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
+            if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
 			global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
 			$CTFSTATE{TeamTwoCarrier} = "";
 		}
@@ -236,23 +260,23 @@ sub game_action {
 	if($event eq "6") {
 		#Flag Captured
 		if($$source{team} == 1) {
-                        if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
+            if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
 			global_msg(sprintf("%s has captured Team 2's flag!",$$source{nickname}));
 			$CTFSTATE{TeamOneScore}++;
 			$CTFSTATE{TeamOneCarrier}    = "";
 			$CTFSTATE{TeamOneFlagItem}   = "";
 			$CTFSTATE{TeamOneFlagSector} = "";
-                	team_msg(1,"RESETFLAG");
+            team_msg(1,"RESETFLAG");
 		}
-                if($$source{team} == 2) {
-                       if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
-                        global_msg(sprintf("%s has captured Team 1's flag!",$$source{nickname}));
-                        $CTFSTATE{TeamTwoScore}++;
+        if($$source{team} == 2) {
+        	if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
+            global_msg(sprintf("%s has captured Team 1's flag!",$$source{nickname}));
+            $CTFSTATE{TeamTwoScore}++;
 			$CTFSTATE{TeamTwoCarrier}    = "";
 			$CTFSTATE{TeamTwoFlagItem}   = "";
 			$CTFSTATE{TeamTwoFlagSector} = "";
 			team_msg(2,"RESETFLAG");
-                }
+        }
 		global_msg(sprintf("-=Scoreboard=- Team 1: %s Team 2: %s",$CTFSTATE{TeamOneScore},$CTFSTATE{TeamTwoScore}));
 	}
 	
@@ -266,26 +290,51 @@ sub assign_team {
 	my $source = $_[0];
 	my $team1 = "";
 	my $team2 = "";
-        my $pool;
+    my $pool;
+	my $query; #SQL Query
+    my $row; #Table row data
 
-	if($CTFSTATE{TeamOnePlayers} > $CTFSTATE{TeamTwoPlayers}) {
-		$$source{team} = 2;
-		$CTFSTATE{TeamTwoPlayers}++;
-		player_msg($source,"SETTEAM 2");
-		player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+	#Does player have a team already?
+	$query = $SQL->prepare("SELECT team FROM player_stat WHERE name=?");
+	$query->execute($$source{nickname});
+
+	if($query->rows()) {
+		#player has team, assign it 
+		$row = $query->fetchrow_hashref();
+		$$source{team} = $$row{team};
+		if($$row{team} == 1) {
+            $CTFSTATE{TeamOnePlayers}++;
+			player_msg($source,"SETTEAM 1");
+			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+		} else {
+			$CTFSTATE{TeamTwoPlayers}++;
+			player_msg($source,"SETTEAM 2");
+			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+		}
 	} else {
-		$$source{team} = 1;	
-		$CTFSTATE{TeamOnePlayers}++;
-		player_msg($source,"SETTEAM 1");
-                player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+		#No team, check team count and add new player
+		if($CTFSTATE{TeamOnePlayers} > $CTFSTATE{TeamTwoPlayers}) {
+			$$source{team} = 2;
+			$CTFSTATE{TeamTwoPlayers}++;
+			player_msg($source,"SETTEAM 2");
+			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+		} else {
+			$$source{team} = 1;	
+			$CTFSTATE{TeamOnePlayers}++;
+			player_msg($source,"SETTEAM 1");
+            player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+		}
+		#add player and team assignment to table
+		$query = $SQL->prepare("INSERT INTO player_stat SET name=?,team=?");
+		$query->execute($$source{nickname},$$source{team});
 	}
 	foreach $pool (@CPOOL) {
 		if($$pool{team} == 1) {
 			$team1 = sprintf("%s\"%s\" ",$team1,$$pool{nickname});
 		}
 		if($$pool{team} == 2) {
-                        $team2 = sprintf("%s\"%s\" ",$team2,$$pool{nickname});
-                }
+            $team2 = sprintf("%s\"%s\" ",$team2,$$pool{nickname});
+        }
 	}
 	#output team rosters to new player
 	player_msg($source,"Team 1");
@@ -351,7 +400,7 @@ sub server_recieve #\$handle,$data
    if ($message[0] eq "REGISTER") {
        if ($message[1] && !is_registered($message[1])) {
           $source{handle} = $handle;
-          $source{nickname} = substr($data,(index($data, "",length(sprintf("REGISTER ",$message[1])))));
+          $source{nickname} = substr($data,(index($data, "",length(sprintf("REGISTER ")))));
           register_player(\%source);
        } else {
 	      send($handle,"ERROR: Registration failed due to nickname error\n",0);
@@ -438,20 +487,20 @@ sub player_msg # \%source,$msg
 
 sub team_msg #\$msg
 {
-        my $team   = $_[0];
-        my $msg    = $_[1];
-        my $pool;
+    my $team   = $_[0];
+    my $msg    = $_[1];
+    my $pool;
 
-        if ($OPTIONS{DEBUG}) { do_log(sprintf("TEAM %s -> %s",$team, $msg)) }
-        foreach $pool (@CPOOL) {
+    if ($OPTIONS{DEBUG}) { do_log(sprintf("TEAM %s -> %s",$team, $msg)) }
+    foreach $pool (@CPOOL) {
 		if($team == $$pool{team}) {
-                	if(!send($$pool{handle},$msg . "\n", 0))
-                	{
-                        	if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-                        	server_cleanup($$pool{handle});
-                	}
+       		if(!send($$pool{handle},$msg . "\n", 0))
+           	{
+           		if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
+               	server_cleanup($$pool{handle});
+           	}
 		}
-        }
+	}
 }
 
 sub global_msg #\$msg
@@ -494,9 +543,9 @@ sub unregister_player #\%source
 
    	for(my $i = 0; $i < scalar @CPOOL; $i++)
    	{	
-      		if($CPOOL[$i] == $source)
+      	if($CPOOL[$i] == $source)
       		{	
-         		if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
+         	if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
 	 		splice(@CPOOL, $i, 1);
 	 		global_msg(sprintf("%s on Team %s disconnected from game",$$source{nickname},$$source{team}));
 	 		if($$source{team} == 1) {
@@ -504,9 +553,9 @@ sub unregister_player #\%source
 	 			$CTFSTATE{TeamOnePlayers}--;
 				if($$source{nickname} eq $CTFSTATE{TeamOneCarrier}) {
 					global_msg("Team 1 flag carrier disconnected with flag. Flag Reset");
-                        		$CTFSTATE{TeamOneCarrier}    = "";
-                        		$CTFSTATE{TeamOneFlagItem}   = "";
-                        		$CTFSTATE{TeamOneFlagSector} = "";
+                    $CTFSTATE{TeamOneCarrier}    = "";
+                    $CTFSTATE{TeamOneFlagItem}   = "";
+                    $CTFSTATE{TeamOneFlagSector} = "";
 					team_msg(1,"RESETFLAG");
 				}
 	 		}
@@ -514,13 +563,13 @@ sub unregister_player #\%source
 	 			$CTFSTATE{TeamTwoPlayers}--;
 				if($$source{nickname} eq $CTFSTATE{TeamTwoCarrier}) {
 					global_msg("Team 2 flag carrier disconnected with flag. Flag Reset");
-                        		$CTFSTATE{TeamTwoCarrier}    = "";
-                        		$CTFSTATE{TeamTwoFlagItem}   = "";
-                        		$CTFSTATE{TeamTwoFlagSector} = "";
+                    $CTFSTATE{TeamTwoCarrier}    = "";
+                    $CTFSTATE{TeamTwoFlagItem}   = "";
+                    $CTFSTATE{TeamTwoFlagSector} = "";
 					team_msg(2,"RESETFLAG");
 				} 
 			}
-    		}
+    	}
    }
    
    #show_cpool();
