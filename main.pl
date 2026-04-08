@@ -172,15 +172,15 @@ sub game_action {
 			if($CTFSTATE{TeamOneFlagItem} eq "") {
 				#new flag
 				if($$source{sector} ne $CTFSTATE{TeamTwoStation}) {
-					do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamTwoStation});
-					player_msg("RESETFLAG");
+					do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: expected %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamTwoStation}));
+					player_msg($source,"RESETFLAG");
 					player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 					return;
-				} 
+				}
 			} else {
 				if($CTFSTATE{TeamOneFlagItem} ne $message) {
 					do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamOneFlagItem}));
-					player_msg("RESETFLAG");
+					player_msg($source,"RESETFLAG");
                     player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 					return;
 				}
@@ -208,7 +208,7 @@ sub game_action {
 			if($CTFSTATE{TeamTwoFlagItem} eq "") {
             	#new flag
                 if($$source{sector} ne $CTFSTATE{TeamOneStation}) {
-                	do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: %s",$$source{nickname},$$source{sector}),$CTFSTATE{TeamOneStation});
+                	do_log(sprintf("PUNK -> %s in %s tried to create flag FLAG: expected %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamOneStation}));
 					player_msg($source,"RESETFLAG");
                     player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
                     return;
@@ -293,6 +293,12 @@ sub assign_team {
     my $pool;
 	my $query; #SQL Query
     my $row; #Table row data
+
+	if (!$SQL) {
+		if ($OPTIONS{DEBUG}) { do_log("ERROR -> assign_team called with no DB connection") }
+		player_msg($source,"ERROR: Database unavailable, team assignment failed");
+		return;
+	}
 
 	#Does player have a team already?
 	$query = $SQL->prepare("SELECT team FROM player_stat WHERE name=?");
@@ -420,7 +426,8 @@ sub server_recieve #\$handle,$data
       server_cleanup($handle);   	
    }
    if ($message[0] eq "PONG") {
-      server_pong(getsource($handle));	
+      my $pongsource = getsource($handle);
+      server_pong($pongsource) if $pongsource;
    }
    
 }
@@ -490,6 +497,7 @@ sub team_msg #\$msg
     my $team   = $_[0];
     my $msg    = $_[1];
     my $pool;
+    my @failed;
 
     if ($OPTIONS{DEBUG}) { do_log(sprintf("TEAM %s -> %s",$team, $msg)) }
     foreach $pool (@CPOOL) {
@@ -497,25 +505,28 @@ sub team_msg #\$msg
        		if(!send($$pool{handle},$msg . "\n", 0))
            	{
            		if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-               	server_cleanup($$pool{handle});
+               	push @failed, $$pool{handle};
            	}
 		}
 	}
+    server_cleanup($_) for @failed;
 }
 
 sub global_msg #\$msg
 {
    	my $msg    = $_[0];
    	my $pool;
-   
+    my @failed;
+
 	if ($OPTIONS{DEBUG}) { do_log(sprintf("GLOBAL -> %s",$msg)) }
    	foreach $pool (@CPOOL) {
     		if(!send($$pool{handle}, "GLOBAL " . $msg . "\n", 0))
     		{
        			if ($OPTIONS{DEBUG}) { do_log("ERROR -> SEND failed on socket closing connection\n") }
-       			server_cleanup($$pool{handle});
-    		}		
+       			push @failed, $$pool{handle};
+    		}
    	}
+    server_cleanup($_) for @failed;
 } 
 
 sub register_player #\%source

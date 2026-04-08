@@ -15,13 +15,21 @@ csctf.enemyStation   = 0
 
 function csctf.turbooff() gkinterface.GKProcessCommand('+turbo 0') end
 
-function csctf.output(input) 
+function csctf.output(input)
 	local output
 	if csctf.on == 0 then
 		return
 	end
 	output = "\12700ffff-=CTF=- " .. input .. "\127o"
 	print(output)
+end
+
+function csctf.HomeAlert(team)
+	if team == 1 then
+		csctf.output("Warning: Team 1 home station should be in Sedina, not Bractus. Change your home to Sedina D-14.")
+	else
+		csctf.output("Warning: Team 2 home station should be in Bractus, not Sedina. Change your home to Bractus D-9.")
+	end
 end
 	
 function csctf.CTFStart()
@@ -36,9 +44,11 @@ function csctf.CTFStop()
 		JettisonAll()
 		csctf.hasEnemyFlag = 0
 		csctf.enemyFlagId  = 0
-		csctfClient:Send("ACTION 5 " .. GetPlayerName())	--flag drop		
+		if csctfClient then
+			csctfClient:Send("ACTION 5 " .. GetPlayerName())	--flag drop
+		end
 		csctf.output("Flag ejected, do /ctfstop again to stop client functions")
-		return	
+		return
 	end
 	csctf.shipMaxSpeed   = 0
 	csctf.hasEnemyFlag   = 0
@@ -145,14 +155,11 @@ function csctf.eventhandler(event,data,data1)
 			if csctf.hasEnemyFlag == 1 then
 				csctf.hasEnemyFlag = 0
 				csctf.enemyFlagId  = 0
-				csctfClient:Send("ACTION 3 " .. myChar)	--flag drop		
+				csctfClient:Send("ACTION 3 " .. myChar)	--flag drop on death
 			end
-		end
-		if data == GetCharacterID() then
-			if(data1 == data) then
-				return --Suicide, TODO: when stats are eventually recorded this must notify server of suicide
+			if data1 ~= data then --not a suicide
+				csctfClient:Send("ACTION 2 " .. GetPlayerName(data) .. ":" .. GetPlayerName(data1)) --pk record
 			end
-			csctfClient:Send("ACTION 2 " .. GetPlayerName(data) .. ":" .. GetPlayerName(data1)) --pk record
 		end
 	end
 	

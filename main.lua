@@ -17,15 +17,17 @@ end
 
 function csctf.download() --download the current game logic
 	local downloaded
-	local run
     downloaded = HTTP.new()
 	downloaded.method = "GET"
 	downloaded.urlopen(csctf.server,function(r)
-		ctffile = r.body.get()
-	--	print(ctffile)
-		SaveSystemNotes(ctffile,290981)
+		if r.body then
+			ctffile = r.body.get()
+			SaveSystemNotes(ctffile,290981)
+		else
+			console_print("csctf: failed to download update (HTTP " .. tostring(r.status) .. "), using cached version")
+		end
+		csctf.dofile(getsystemnote(290981))
 	end)
-	dofile(getsystemnote(290981))
 end	
 
 function csctf.dofile(filename) --stolen from anyx and modified
