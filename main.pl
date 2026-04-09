@@ -87,12 +87,42 @@ sub state_load {
                     $CTFSTATE{TeamTwoCarrier} || "none",
                     $CTFSTATE{TeamTwoFlagSector}));
             }
+            # If either flag had a carrier, give them 60 seconds to reconnect and verify
+            if ($CTFSTATE{TeamOneCarrier} ne "" || $CTFSTATE{TeamTwoCarrier} ne "") {
+                do_log("STATE -> Flag carriers were active at shutdown, waiting 60s for reconnect...");
+                Event->timer(at => time + 60, cb => \&carrier_reconnect_timeout);
+            }
         } else {
             do_log(sprintf("ERROR -> Failed to read state file: %s", $@));
         }
     } else {
         do_log("STATE -> No saved state found, starting fresh");
     }
+}
+
+sub carrier_reconnect_timeout {
+    # Fires 60 seconds after startup if there were carriers in the restored state.
+    # Any carrier who has not rejoined by now gets their flag reset.
+    my $changed = 0;
+    if ($CTFSTATE{TeamOneCarrier} ne "" && !is_registered($CTFSTATE{TeamOneCarrier})) {
+        do_log(sprintf("STATE -> Carrier %s did not reconnect, resetting Team 1 flag", $CTFSTATE{TeamOneCarrier}));
+        global_msg(sprintf("Flag carrier %s did not reconnect. Team 2's flag has been reset.", $CTFSTATE{TeamOneCarrier}));
+        $CTFSTATE{TeamOneCarrier}    = "";
+        $CTFSTATE{TeamOneFlagItem}   = "";
+        $CTFSTATE{TeamOneFlagSector} = "";
+        team_msg(1, "RESETFLAG");
+        $changed = 1;
+    }
+    if ($CTFSTATE{TeamTwoCarrier} ne "" && !is_registered($CTFSTATE{TeamTwoCarrier})) {
+        do_log(sprintf("STATE -> Carrier %s did not reconnect, resetting Team 2 flag", $CTFSTATE{TeamTwoCarrier}));
+        global_msg(sprintf("Flag carrier %s did not reconnect. Team 1's flag has been reset.", $CTFSTATE{TeamTwoCarrier}));
+        $CTFSTATE{TeamTwoCarrier}    = "";
+        $CTFSTATE{TeamTwoFlagItem}   = "";
+        $CTFSTATE{TeamTwoFlagSector} = "";
+        team_msg(2, "RESETFLAG");
+        $changed = 1;
+    }
+    state_save() if $changed;
 }
 
 sub main()
@@ -333,6 +363,35 @@ sub game_action {
 		team_msg($$source{team},$message);
 	}
 
+	if($event eq "8") { #Carrier verification response after server restart
+		if($$source{team} == 1 && $CTFSTATE{TeamOneCarrier} eq $$source{nickname}) {
+			if($message eq "0") {
+				do_log(sprintf("STATE -> %s no longer has the flag, resetting Team 1 flag", $$source{nickname}));
+				global_msg(sprintf("%s no longer has Team 2's flag. Flag has been reset.", $$source{nickname}));
+				$CTFSTATE{TeamOneCarrier}    = "";
+				$CTFSTATE{TeamOneFlagItem}   = "";
+				$CTFSTATE{TeamOneFlagSector} = "";
+				team_msg(1,"RESETFLAG");
+			} else {
+				do_log(sprintf("STATE -> %s confirmed still carrying Team 2's flag", $$source{nickname}));
+				global_msg(sprintf("%s has reconnected and is still carrying Team 2's flag!", $$source{nickname}));
+			}
+		}
+		if($$source{team} == 2 && $CTFSTATE{TeamTwoCarrier} eq $$source{nickname}) {
+			if($message eq "0") {
+				do_log(sprintf("STATE -> %s no longer has the flag, resetting Team 2 flag", $$source{nickname}));
+				global_msg(sprintf("%s no longer has Team 1's flag. Flag has been reset.", $$source{nickname}));
+				$CTFSTATE{TeamTwoCarrier}    = "";
+				$CTFSTATE{TeamTwoFlagItem}   = "";
+				$CTFSTATE{TeamTwoFlagSector} = "";
+				team_msg(2,"RESETFLAG");
+			} else {
+				do_log(sprintf("STATE -> %s confirmed still carrying Team 1's flag", $$source{nickname}));
+				global_msg(sprintf("%s has reconnected and is still carrying Team 1's flag!", $$source{nickname}));
+			}
+		}
+	}
+
 	state_save();
 }
 
@@ -385,6 +444,16 @@ sub assign_team {
 		$query = $SQL->prepare("INSERT INTO player_stat SET name=?,team=?");
 		$query->execute($$source{nickname},$$source{team});
 	}
+	# If this player was a flag carrier when the server went down, ask them to verify
+	if ($$source{team} == 1 && $CTFSTATE{TeamOneCarrier} eq $$source{nickname}) {
+		player_msg($source, sprintf("VERIFYCARRIER %s", $CTFSTATE{TeamOneFlagItem}));
+		do_log(sprintf("STATE -> Sent VERIFYCARRIER to %s for %s", $$source{nickname}, $CTFSTATE{TeamOneFlagItem}));
+	}
+	if ($$source{team} == 2 && $CTFSTATE{TeamTwoCarrier} eq $$source{nickname}) {
+		player_msg($source, sprintf("VERIFYCARRIER %s", $CTFSTATE{TeamTwoFlagItem}));
+		do_log(sprintf("STATE -> Sent VERIFYCARRIER to %s for %s", $$source{nickname}, $CTFSTATE{TeamTwoFlagItem}));
+	}
+
 	foreach $pool (@CPOOL) {
 		if($$pool{team} == 1) {
 			$team1 = sprintf("%s\"%s\" ",$team1,$$pool{nickname});
