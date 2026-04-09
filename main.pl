@@ -19,14 +19,15 @@ $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 require "./log.pl";
 
 my %OPTIONS = (
-        DD_BUILD   => "0.1.9",
-        DEBUG      => 1,
-        DB_HOST    => "localhost",
-        DB_PORT    => 3306,
-        DB_USER    => "",
-        DB_PASS    => "",
-        DB_DB      => "",
-        STATE_FILE => "./ctfstate.dat",
+        DD_BUILD    => "0.2.0",
+        MIN_VERSION => "0.2.0",
+        DEBUG       => 1,
+        DB_HOST     => "localhost",
+        DB_PORT     => 3306,
+        DB_USER     => "",
+        DB_PASS     => "",
+        DB_DB       => "",
+        STATE_FILE  => "./ctfstate.dat",
     );
 
 my $SOCKET; #Main Socket
@@ -35,6 +36,7 @@ my $MINUTE; #minute timer
 my @CPOOL;  #Connection pool hashes
 my $SQL; #Database connection handler
 my $BACKUP_COUNTER = 0;
+my %PENDING_VERIFY; # "$handle" => Event timer (waiting for VERSION response)
 
 my %CTFSTATE = (
 	TeamOnePlayers    => 0,
@@ -103,6 +105,20 @@ sub state_load {
     } else {
         do_log("STATE -> No saved state found, starting fresh");
     }
+}
+
+sub version_ge {
+    # Returns 1 if $v1 >= $v2 (dot-separated version strings)
+    my ($v1, $v2) = @_;
+    my @a = split(/\./, $v1 // "0");
+    my @b = split(/\./, $v2 // "0");
+    for my $i (0..2) {
+        my $a = $a[$i] // 0;
+        my $b = $b[$i] // 0;
+        return 1 if $a > $b;
+        return 0 if $a < $b;
+    }
+    return 1;
 }
 
 sub db_migrate {
@@ -632,6 +648,20 @@ sub server_cycle()
     {
       $NEW_CONNECTION = $SOCKET->accept();
       $SELECT->add($NEW_CONNECTION);
+      send($NEW_CONNECTION, "VERSIONCHECK\n", 0);
+      my $nh = $NEW_CONNECTION;
+      $PENDING_VERIFY{"$nh"} = Event->timer(
+          at => time + 10,
+          cb => sub {
+              if (exists $PENDING_VERIFY{"$nh"}) {
+                  delete $PENDING_VERIFY{"$nh"};
+                  if ($OPTIONS{DEBUG}) { do_log("VERSION -> Timeout waiting for version response, disconnecting") }
+                  send($nh, "UPDATE Your CTF plugin is outdated or did not respond. Use /lua ReloadInterface() to update, or re-download from voupr if your version is older than 0.2.0.\n", 0);
+                  $SELECT->remove($nh);
+                  $nh->close();
+              }
+          }
+      );
     } else
     {
       if(sysread($handle, $data, 512) == 0) #read it or close it
@@ -657,7 +687,27 @@ sub server_recieve #\$handle,$data
    my $pool;
    
    @message = split(/\s+/,$data);
+   if ($message[0] eq "VERSION") {
+       my $ver = $message[1] // "0.0.0";
+       if (version_ge($ver, $OPTIONS{MIN_VERSION})) {
+           if ($OPTIONS{DEBUG}) { do_log(sprintf("VERSION -> Accepted client version %s", $ver)) }
+           if (exists $PENDING_VERIFY{"$handle"}) {
+               $PENDING_VERIFY{"$handle"}->cancel();
+               delete $PENDING_VERIFY{"$handle"};
+           }
+           send($handle, "VERSIONOK\n", 0);
+       } else {
+           if ($OPTIONS{DEBUG}) { do_log(sprintf("VERSION -> Rejected client version %s (minimum %s)", $ver, $OPTIONS{MIN_VERSION})) }
+           send($handle, "UPDATE Your CTF plugin version ($ver) is below the minimum required (0.2.0). Use /lua ReloadInterface() to update, or re-download from voupr.\n", 0);
+           $SELECT->remove($handle);
+           $handle->close();
+       }
+   }
    if ($message[0] eq "REGISTER") {
+       if (exists $PENDING_VERIFY{"$handle"}) {
+           if ($OPTIONS{DEBUG}) { do_log("REGISTER -> Rejected, handle has not passed version check") }
+           return;
+       }
        if ($message[1]) {
            my $existing = getplayer($message[1]);
            if ($existing && $$existing{handle} != $handle) {

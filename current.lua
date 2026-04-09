@@ -1,4 +1,4 @@
-csctf.version           = "0.1.9"
+csctf.version           = "0.2.0"
 csctf.on                = 0
 csctf.teamOneStation    = 1299457 --Sedina D14
 csctf.teamTwoStation    = 1082369 -- Bractus D9
@@ -240,8 +240,7 @@ function csctf.Connected(conn,success)
 	if conn then
 		csctf.reconnectAttempts = 0  -- successful connection, clear retry counter
 		csctf.output("Connecting to CTF server...")
-		conn:Send("VERSION " .. csctf.version)
-		conn:Send("REGISTER " .. GetPlayerName())
+		-- VERSION and REGISTER are sent in response to server prompts (VERSIONCHECK / VERSIONOK)
 	else
 		csctf.output("Connection failed")
 		csctfClient = nil
@@ -250,7 +249,14 @@ function csctf.Connected(conn,success)
 end
 
 function csctf.Incoming(conn,line)
-	if line == "PING" then
+	if line == "VERSIONCHECK" then
+		csctf.send("VERSION " .. csctf.version)
+	elseif line == "VERSIONOK" then
+		csctf.send("REGISTER " .. GetPlayerName())
+	elseif string.sub(line,1,7) == "UPDATE " then
+		csctf.output("\127ffff00" .. string.sub(line,8))
+		csctf.CTFStop()
+	elseif line == "PING" then
 		csctf.send("PONG")
 	elseif string.sub(line,1,7) == "GLOBAL " then
 		csctf.output(string.sub(line,8))
