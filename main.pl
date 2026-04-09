@@ -10,21 +10,23 @@ use IO::Socket::INET;
 use warnings;
 use IPC::Open3;
 use DBD::mysql;
+use Storable qw(store retrieve);
 
 # uncomment to handle SIGPIPE yourself
 $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 
 require "./log.pl";
 
-my %OPTIONS = ( 
-        DD_BUILD  => "0.1.9",
-        DEBUG     => 1,
-		DB_HOST   => "localhost",
-		DB_PORT   => 3306,
-		DB_USER   => "",
-		DB_PASS   => "",
-		DB_DB     => ""
-	);
+my %OPTIONS = (
+        DD_BUILD   => "0.1.9",
+        DEBUG      => 1,
+        DB_HOST    => "localhost",
+        DB_PORT    => 3306,
+        DB_USER    => "",
+        DB_PASS    => "",
+        DB_DB      => "",
+        STATE_FILE => "./ctfstate.dat",
+    );
 
 my $SOCKET; #Main Socket
 my $SELECT; 
@@ -49,6 +51,50 @@ my %CTFSTATE = (
 	TeamTwoTimeout    => 0,
 );
 
+sub state_save {
+    my %save;
+    # Persist everything except live player counts — those reset as clients reconnect
+    for my $key (keys %CTFSTATE) {
+        next if $key eq 'TeamOnePlayers' || $key eq 'TeamTwoPlayers';
+        $save{$key} = $CTFSTATE{$key};
+    }
+    store(\%save, $OPTIONS{STATE_FILE})
+        or do_log(sprintf("ERROR -> Failed to save game state: %s", $!));
+    if ($OPTIONS{DEBUG}) { do_log("STATE -> Game state saved") }
+}
+
+sub state_load {
+    if (-f $OPTIONS{STATE_FILE}) {
+        my $saved = eval { retrieve($OPTIONS{STATE_FILE}) };
+        if ($saved) {
+            for my $key (keys %$saved) {
+                $CTFSTATE{$key} = $$saved{$key};
+            }
+            $CTFSTATE{TeamOnePlayers} = 0;
+            $CTFSTATE{TeamTwoPlayers} = 0;
+            do_log("STATE -> Game state restored from previous session");
+            do_log(sprintf("STATE -> Score: Team 1: %d  Team 2: %d",
+                $CTFSTATE{TeamOneScore}, $CTFSTATE{TeamTwoScore}));
+            if ($CTFSTATE{TeamOneFlagItem} ne "") {
+                do_log(sprintf("STATE -> Team 1 flag (%s) was in play | carrier: %s | sector: %s",
+                    $CTFSTATE{TeamOneFlagItem},
+                    $CTFSTATE{TeamOneCarrier} || "none",
+                    $CTFSTATE{TeamOneFlagSector}));
+            }
+            if ($CTFSTATE{TeamTwoFlagItem} ne "") {
+                do_log(sprintf("STATE -> Team 2 flag (%s) was in play | carrier: %s | sector: %s",
+                    $CTFSTATE{TeamTwoFlagItem},
+                    $CTFSTATE{TeamTwoCarrier} || "none",
+                    $CTFSTATE{TeamTwoFlagSector}));
+            }
+        } else {
+            do_log(sprintf("ERROR -> Failed to read state file: %s", $@));
+        }
+    } else {
+        do_log("STATE -> No saved state found, starting fresh");
+    }
+}
+
 sub main()
 {
   if (!$OPTIONS{DEBUG})
@@ -59,6 +105,7 @@ sub main()
   server_init(); #Start the CTF
   db_init();
   game_init(); #start timers
+  state_load(); #restore state from previous session
   while (1) 
   {
     server_cycle();
@@ -104,6 +151,7 @@ sub game_minute {
             $CTFSTATE{TeamOneFlagItem}   = "";
             $CTFSTATE{TeamOneFlagSector} = "";
             team_msg(1,"RESETFLAG");
+            state_save();
 		}
 	}
 	if($CTFSTATE{TeamTwoFlagItem} ne "") {
@@ -112,10 +160,11 @@ sub game_minute {
                 }       
                 if ( (time - $CTFSTATE{TeamTwoTimeout}) > 180 ) {
                         global_msg("Team 1's flag has been returned");
-                        $CTFSTATE{TeamTwoCarrier}    = "";   
+                        $CTFSTATE{TeamTwoCarrier}    = "";
                         $CTFSTATE{TeamTwoFlagItem}   = "";
                         $CTFSTATE{TeamTwoFlagSector} = "";
                         team_msg(2,"RESETFLAG");
+                        state_save();
                 }
         }
 
@@ -283,6 +332,8 @@ sub game_action {
 	if($event eq "7") { #Team Chat
 		team_msg($$source{team},$message);
 	}
+
+	state_save();
 }
 
 sub assign_team {
