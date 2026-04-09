@@ -653,8 +653,9 @@ sub register_player #\%source
 {
   #add player to @cpool so when needed we can find this player later
   my $source = $_[0];
-    
+
   $$source{ping} = time;
+  $$source{pk}   = 0;
   push @CPOOL, $source;
   player_msg($source,"Logged In.");
   assign_team($source);
