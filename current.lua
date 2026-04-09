@@ -280,7 +280,8 @@ function csctf.Incoming(conn,line)
 	elseif string.sub(line,1,14) == "VERIFYCARRIER " then
 		-- Server is asking us to confirm we still have the flag after a restart/reconnect
 		local item = string.sub(line,15)
-		if csctf.hasEnemyFlag == 1 and csctf.enemyFlag == item then
+		local physicalItem = (csctf.enemyFlagId ~= 0) and GetInventoryItemName(csctf.enemyFlagId) or nil
+		if csctf.hasEnemyFlag == 1 and csctf.enemyFlag == item and physicalItem == item then
 			csctf.send("ACTION 8 1")
 			csctf.output("Confirmed still carrying " .. item .. " after reconnect")
 		else
