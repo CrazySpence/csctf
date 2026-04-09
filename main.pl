@@ -11,6 +11,7 @@ use warnings;
 use IPC::Open3;
 use DBD::mysql;
 use Storable qw(store retrieve);
+use File::Copy;
 
 # uncomment to handle SIGPIPE yourself
 $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
@@ -29,10 +30,11 @@ my %OPTIONS = (
     );
 
 my $SOCKET; #Main Socket
-my $SELECT; 
+my $SELECT;
 my $MINUTE; #minute timer
 my @CPOOL;  #Connection pool hashes
 my $SQL; #Database connection handler
+my $BACKUP_COUNTER = 0;
 
 my %CTFSTATE = (
 	TeamOnePlayers    => 0,
@@ -47,8 +49,11 @@ my %CTFSTATE = (
 	TeamTwoFlagSector => "",
 	TeamOneFlagItem   => "",
 	TeamTwoFlagItem   => "",
-	TeamOneTimeout    => 0,
-	TeamTwoTimeout    => 0,
+	TeamOneTimeout      => 0,
+	TeamTwoTimeout      => 0,
+	BountyTable         => {},
+	TeamOneCarryHistory => [],
+	TeamTwoCarryHistory => [],
 );
 
 sub state_save {
@@ -100,6 +105,82 @@ sub state_load {
     }
 }
 
+sub db_migrate {
+    return unless $SQL;
+    for my $col (qw(captures assists pks total_score)) {
+        $SQL->do("ALTER TABLE player_stat ADD COLUMN IF NOT EXISTS $col INT NOT NULL DEFAULT 0");
+    }
+    if ($OPTIONS{DEBUG}) { do_log("DB -> Migration complete") }
+}
+
+sub getplayer {
+    my $nickname = $_[0];
+    for my $pool (@CPOOL) {
+        if (lc($$pool{nickname}) eq lc($nickname)) {
+            return $pool;
+        }
+    }
+    return undef;
+}
+
+sub stat_add {
+    my ($nickname, $column, $amount) = @_;
+    return unless $SQL;
+    my %allowed = map { $_ => 1 } qw(captures assists pks total_score);
+    return unless $allowed{$column};
+    $SQL->do("UPDATE player_stat SET $column = $column + ? WHERE name = ?", undef, $amount, $nickname);
+}
+
+sub bounty_reset {
+    my $nickname = $_[0];
+    my $player = getplayer($nickname);
+    if ($player) {
+        $$player{bounty} = 0;
+    }
+    $CTFSTATE{BountyTable}{$nickname} = 0;
+}
+
+sub carry_history_add {
+    my ($team, $nickname) = @_;
+    my $hist = $team == 1 ? $CTFSTATE{TeamOneCarryHistory} : $CTFSTATE{TeamTwoCarryHistory};
+    for my $name (@$hist) {
+        return if lc($name) eq lc($nickname);
+    }
+    push @$hist, $nickname;
+}
+
+sub carry_history_clear {
+    my $team = $_[0];
+    if ($team == 1) {
+        $CTFSTATE{TeamOneCarryHistory} = [];
+    } else {
+        $CTFSTATE{TeamTwoCarryHistory} = [];
+    }
+}
+
+sub get_team_score {
+    my $team = $_[0];
+    return 0 unless $SQL;
+    my $row = $SQL->selectrow_arrayref("SELECT SUM(total_score) FROM player_stat WHERE team=?", undef, $team);
+    return $row && defined $row->[0] ? $row->[0] : 0;
+}
+
+sub handle_score_request {
+    my $source = $_[0];
+    return unless $source && $SQL;
+    my $row = $SQL->selectrow_hashref("SELECT captures, assists, pks, total_score FROM player_stat WHERE name=?", undef, $$source{nickname});
+    my $captures   = $row ? $row->{captures}    : 0;
+    my $assists    = $row ? $row->{assists}      : 0;
+    my $total      = $row ? $row->{total_score}  : 0;
+    my $bounty     = $$source{bounty} // 0;
+    my $t1_total   = get_team_score(1);
+    my $t2_total   = get_team_score(2);
+    player_msg($source, sprintf("SCOREDATA %d %d %d %d %d %d %d %d",
+        $CTFSTATE{TeamOneScore}, $CTFSTATE{TeamTwoScore},
+        $total, $bounty, $captures, $assists,
+        $t1_total, $t2_total));
+}
+
 sub carrier_reconnect_timeout {
     # Fires 60 seconds after startup if there were carriers in the restored state.
     # Any carrier who has not rejoined by now gets their flag reset.
@@ -133,9 +214,10 @@ sub main()
   } 
   do_log(sprintf('MAIN -> CTF Build %s', $OPTIONS{DD_BUILD}));
   server_init(); #Start the CTF
-  db_init();
-  game_init(); #start timers
   state_load(); #restore state from previous session
+  db_init();
+  db_migrate();
+  game_init(); #start timers
   while (1) 
   {
     server_cycle();
@@ -180,23 +262,36 @@ sub game_minute {
 			$CTFSTATE{TeamOneCarrier}    = "";
             $CTFSTATE{TeamOneFlagItem}   = "";
             $CTFSTATE{TeamOneFlagSector} = "";
+            carry_history_clear(1);
             team_msg(1,"RESETFLAG");
             state_save();
 		}
 	}
 	if($CTFSTATE{TeamTwoFlagItem} ne "") {
-                if($CTFSTATE{TeamTwoCarrier} ne "") {
-                        $CTFSTATE{TeamTwoTimeout} = time;
-                }       
-                if ( (time - $CTFSTATE{TeamTwoTimeout}) > 180 ) {
-                        global_msg("Team 1's flag has been returned");
-                        $CTFSTATE{TeamTwoCarrier}    = "";
-                        $CTFSTATE{TeamTwoFlagItem}   = "";
-                        $CTFSTATE{TeamTwoFlagSector} = "";
-                        team_msg(2,"RESETFLAG");
-                        state_save();
-                }
-        }
+		if($CTFSTATE{TeamTwoCarrier} ne "") {
+			$CTFSTATE{TeamTwoTimeout} = time;
+		}
+		if ( (time - $CTFSTATE{TeamTwoTimeout}) > 180 ) {
+			global_msg("Team 1's flag has been returned");
+			$CTFSTATE{TeamTwoCarrier}    = "";
+			$CTFSTATE{TeamTwoFlagItem}   = "";
+			$CTFSTATE{TeamTwoFlagSector} = "";
+			carry_history_clear(2);
+			team_msg(2,"RESETFLAG");
+			state_save();
+		}
+	}
+
+	# Periodic backup rotation every 5 minutes
+	$BACKUP_COUNTER++;
+	if ($BACKUP_COUNTER >= 5) {
+		$BACKUP_COUNTER = 0;
+		my $base = $OPTIONS{STATE_FILE};
+		File::Copy::move("$base.2", "$base.3") if -f "$base.2";
+		File::Copy::move("$base.1", "$base.2") if -f "$base.1";
+		File::Copy::copy($base,     "$base.1") if -f $base;
+		if ($OPTIONS{DEBUG}) { do_log("STATE -> Backup rotation complete") }
+	}
 
 	#Check SQL status, reconnect if needed
 	if(!$SQL) {
@@ -224,12 +319,20 @@ sub game_action {
 	}
 	
 	if ($event eq "2") {
-        #PK Detected
+		#PK Detected — $$source is the victim, arguments[1] is the killer
 		@arguments = split(/\:+/,$message);
 		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s killed %s",$arguments[1],$arguments[0])) }
 		$$source{pk} = $$source{pk} + 1;
-		#At somepoint check if killing an enemy flag carrier and increase a "defense" stat
-	} 
+		my $victim_bounty = $$source{bounty} // 0;
+		bounty_reset($$source{nickname});
+		my $killer = getplayer($arguments[1]);
+		if ($killer) {
+			$$killer{bounty} = ($$killer{bounty} // 0) + 100;
+			stat_add($arguments[1], 'pks', 1);
+			stat_add($arguments[1], 'total_score', $victim_bounty) if $victim_bounty > 0;
+		}
+		state_save();
+	}
 	
 	if ($event eq "3") {
 		#Flag Carrier died
@@ -237,12 +340,15 @@ sub game_action {
         	if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
             global_msg(sprintf("%s has dropped Team 2's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamOneFlagItem},$$source{sector}));
             $CTFSTATE{TeamOneCarrier} = "";
+            carry_history_clear(1);
         }
         if($$source{team} == 2) {
         	if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
             global_msg(sprintf("%s has dropped Team 1's flag(%s) in %s",$$source{nickname},$CTFSTATE{TeamTwoFlagItem},$$source{sector}));
             $CTFSTATE{TeamTwoCarrier} = "";
+            carry_history_clear(2);
         }
+        state_save();
 	}
 	
 	if ($event eq "4") {
@@ -256,6 +362,7 @@ sub game_action {
 					player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 					return;
 				}
+				carry_history_clear(1);
 			} else {
 				if($CTFSTATE{TeamOneFlagItem} ne $message) {
 					do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamOneFlagItem}));
@@ -280,6 +387,7 @@ sub game_action {
 			$CTFSTATE{TeamOneFlagItem}   = $message;
 			$CTFSTATE{TeamOneFlagSector} = $$source{sector};
 			$CTFSTATE{TeamOneCarrier}    = $$source{nickname};
+			carry_history_add(1, $$source{nickname});
 			team_msg(1,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 			$CTFSTATE{TeamOneTimeout} = time;
 		}
@@ -292,6 +400,7 @@ sub game_action {
                     player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
                     return;
                 }
+                carry_history_clear(2);
             } else {
 				if($CTFSTATE{TeamTwoFlagItem} ne $message) {
                 	do_log(sprintf("PUNK -> %s tried to capture %s when %s is FLAGITEM",$$source{nickname},$message,$CTFSTATE{TeamTwoFlagItem}));
@@ -316,6 +425,7 @@ sub game_action {
 			$CTFSTATE{TeamTwoFlagItem}   = $message;
 			$CTFSTATE{TeamTwoFlagSector} = $$source{sector};
 			$CTFSTATE{TeamTwoCarrier}    = $$source{nickname};
+			carry_history_add(2, $$source{nickname});
 			$CTFSTATE{TeamTwoTimeout} = time;
 			team_msg(2,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
 		}
@@ -342,6 +452,18 @@ sub game_action {
             if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
 			global_msg(sprintf("%s has captured Team 2's flag!",$$source{nickname}));
 			$CTFSTATE{TeamOneScore}++;
+			$$source{bounty} = ($$source{bounty} // 0) + 500;
+			stat_add($$source{nickname}, 'captures', 1);
+			stat_add($$source{nickname}, 'total_score', 500);
+			for my $name (@{$CTFSTATE{TeamOneCarryHistory}}) {
+				next if lc($name) eq lc($$source{nickname});
+				my $helper = getplayer($name);
+				if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 250; }
+				else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 250; }
+				stat_add($name, 'assists', 1);
+				stat_add($name, 'total_score', 250);
+			}
+			carry_history_clear(1);
 			$CTFSTATE{TeamOneCarrier}    = "";
 			$CTFSTATE{TeamOneFlagItem}   = "";
 			$CTFSTATE{TeamOneFlagSector} = "";
@@ -351,6 +473,18 @@ sub game_action {
         	if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
             global_msg(sprintf("%s has captured Team 1's flag!",$$source{nickname}));
             $CTFSTATE{TeamTwoScore}++;
+            $$source{bounty} = ($$source{bounty} // 0) + 500;
+            stat_add($$source{nickname}, 'captures', 1);
+            stat_add($$source{nickname}, 'total_score', 500);
+            for my $name (@{$CTFSTATE{TeamTwoCarryHistory}}) {
+                next if lc($name) eq lc($$source{nickname});
+                my $helper = getplayer($name);
+                if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 250; }
+                else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 250; }
+                stat_add($name, 'assists', 1);
+                stat_add($name, 'total_score', 250);
+            }
+            carry_history_clear(2);
 			$CTFSTATE{TeamTwoCarrier}    = "";
 			$CTFSTATE{TeamTwoFlagItem}   = "";
 			$CTFSTATE{TeamTwoFlagSector} = "";
@@ -549,7 +683,11 @@ sub server_recieve #\$handle,$data
       my $pongsource = getsource($handle);
       server_pong($pongsource) if $pongsource;
    }
-   
+   if ($message[0] eq "SCORE") {
+      my $scoresource = getsource($handle);
+      handle_score_request($scoresource) if $scoresource;
+   }
+
 }
 
 sub server_pong {
@@ -654,8 +792,9 @@ sub register_player #\%source
   #add player to @cpool so when needed we can find this player later
   my $source = $_[0];
 
-  $$source{ping} = time;
-  $$source{pk}   = 0;
+  $$source{ping}   = time;
+  $$source{pk}     = 0;
+  $$source{bounty} = $CTFSTATE{BountyTable}{$$source{nickname}} // 0;
   push @CPOOL, $source;
   player_msg($source,"Logged In.");
   assign_team($source);
@@ -678,6 +817,7 @@ sub unregister_player #\%source
       	if($CPOOL[$i] == $source)
       		{	
          	if ($OPTIONS{DEBUG}) { do_log(sprintf("MAIN -> %s logging off",$$source{nickname})) }
+	 		$CTFSTATE{BountyTable}{$$source{nickname}} = $$source{bounty} // 0;
 	 		splice(@CPOOL, $i, 1);
 	 		global_msg(sprintf("%s on Team %s disconnected from game",$$source{nickname},$$source{team}));
 	 		if($$source{team} == 1) {

@@ -290,6 +290,14 @@ function csctf.Incoming(conn,line)
 			csctf.enemyFlagId  = 0
 			csctf.enemyFlag    = 0
 		end
+	elseif string.sub(line,1,10) == "SCOREDATA " then
+		local parts = {}
+		for word in string.gmatch(string.sub(line,11), "%S+") do
+			table.insert(parts, tonumber(word) or 0)
+		end
+		csctf.output(string.format("Flag Score  -- Team 1: %d  |  Team 2: %d", parts[1], parts[2]))
+		csctf.output(string.format("Your Score  -- Points: %d  |  Bounty: %d  |  Captures: %d  |  Assists: %d", parts[3], parts[4], parts[5], parts[6]))
+		csctf.output(string.format("Team Points -- Team 1: %d  |  Team 2: %d", parts[7], parts[8]))
 	elseif line == "RESETFLAG" then
 		csctf.hasEnemyFlag = 0
 		csctf.enemyFlagId  = 0
@@ -308,10 +316,16 @@ RegisterEvent(csctf.eventhandler, "ENTERED_STATION")
 RegisterEvent(csctf.eventhandler, "PLAYER_ENTERED_SECTOR")
 RegisterEvent(csctf.eventhandler, "PLAYER_HOME_CHANGED")
 
+function csctf.CTFScore()
+	if csctf.on == 0 then return end
+	csctf.send("SCORE")
+end
+
 RegisterUserCommand("ctfstart",csctf.CTFStart)
 RegisterUserCommand("ctfstop",csctf.CTFStop)
 RegisterUserCommand("ctfsay",csctf.CTFSay)
 RegisterUserCommand("ctfhelp",csctf.CTFHelp)
+RegisterUserCommand("ctfscore",csctf.CTFScore)
 
 --Exit handlers
 RegisterEvent(csctf.CTFStop,"UNLOAD_INTERFACE")
