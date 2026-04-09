@@ -303,6 +303,13 @@ function csctf.Incoming(conn,line)
 		csctf.enemyFlagId  = 0
 		csctf.enemyFlag    = 0
 		JettisonAll()
+	elseif string.sub(line,1,7) == "ERROR: " then
+		csctf.output(line)
+		-- Treat a server-level error as a disconnect so reconnect logic fires
+		if csctfClient then
+			csctfClient = nil
+		end
+		csctf.Disconnected()
 	else
 		csctf.output(line)
 	end

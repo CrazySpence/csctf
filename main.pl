@@ -658,14 +658,23 @@ sub server_recieve #\$handle,$data
    
    @message = split(/\s+/,$data);
    if ($message[0] eq "REGISTER") {
-       if ($message[1] && !is_registered($message[1])) {
-          $source{handle} = $handle;
-          $source{nickname} = substr($data,(index($data, "",length(sprintf("REGISTER ")))));
-          register_player(\%source);
+       if ($message[1]) {
+           my $existing = getplayer($message[1]);
+           if ($existing && $$existing{handle} != $handle) {
+               # Reconnecting player on a new socket — evict the stale connection first
+               if ($OPTIONS{DEBUG}) { do_log(sprintf("REGISTER -> Evicting stale connection for %s", $message[1])) }
+               server_cleanup($$existing{handle});
+           }
+           if (!is_registered($message[1])) {
+               $source{handle} = $handle;
+               $source{nickname} = substr($data,(index($data, "",length(sprintf("REGISTER ")))));
+               register_player(\%source);
+           } else {
+               send($handle,"ERROR: Registration failed due to nickname error\n",0);
+           }
        } else {
-	      send($handle,"ERROR: Registration failed due to nickname error\n",0);
+           send($handle,"ERROR: Registration failed due to nickname error\n",0);
        }
-          	
    }
    if ($message[0] eq "ACTION") { #Game Message recieved
       if (getsource($handle)) {
