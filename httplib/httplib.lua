@@ -351,7 +351,8 @@ function HTTP.new ()
         response.url.host, response.url.path = string.match(u, "http://(.-)/(.*)$") -- Thanks to Miharu
         if not response.url.host then
             -- URL does not match http:// scheme (e.g. https:// redirect) — bail cleanly
-            callcb(makeerrorresponse(0, "Unsupported URL scheme (only http:// is supported): " .. tostring(u)))
+            -- callcb is not defined yet at this point in urlopen, so use cb directly
+            cb(makeerrorresponse(0, "Unsupported URL scheme (only http:// is supported): " .. tostring(u)))
             return
         end
         if string.match(response.url.host, ':') then
