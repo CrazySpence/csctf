@@ -142,6 +142,7 @@ sub getplayer {
 sub stat_add {
     my ($nickname, $column, $amount) = @_;
     return unless $SQL;
+    db_check();
     my %allowed = map { $_ => 1 } qw(captures assists pks total_score);
     return unless $allowed{$column};
     $SQL->do("UPDATE player_stat SET $column = $column + ? WHERE name = ?", undef, $amount, $nickname);
@@ -177,6 +178,7 @@ sub carry_history_clear {
 sub get_team_score {
     my $team = $_[0];
     return 0 unless $SQL;
+    db_check();
     my $row = $SQL->selectrow_arrayref("SELECT SUM(total_score) FROM player_stat WHERE team=?", undef, $team);
     return $row && defined $row->[0] ? $row->[0] : 0;
 }
@@ -184,6 +186,7 @@ sub get_team_score {
 sub handle_score_request {
     my $source = $_[0];
     return unless $source && $SQL;
+    db_check();
     my $row = $SQL->selectrow_hashref("SELECT captures, assists, pks, total_score FROM player_stat WHERE name=?", undef, $$source{nickname});
     my $captures   = $row ? $row->{captures}    : 0;
     my $assists    = $row ? $row->{assists}      : 0;
@@ -245,9 +248,36 @@ sub db_init {
     my $data_source;
 
     #Connect to database
-    if ($OPTIONS{DEBUG}) { do_log("DB INIT -> Connecting to MySQL Database ") }
+    if ($OPTIONS{DEBUG}) { do_log("DB INIT -> Connecting to MySQL Database") }
     $data_source = sprintf('DBI:mysql:database=%s;host=%s;port=%d', $OPTIONS{DB_DB}, $OPTIONS{DB_HOST}, $OPTIONS{DB_PORT});
-    $SQL = DBI->connect($data_source, $OPTIONS{DB_USER}, $OPTIONS{DB_PASS});
+    $SQL = DBI->connect($data_source, $OPTIONS{DB_USER}, $OPTIONS{DB_PASS},
+        { PrintError => 0, RaiseError => 0 });
+}
+
+sub db_reconnect {
+    # Attempt to reconnect up to 3 times. Dies if all attempts fail.
+    for my $attempt (1..3) {
+        do_log(sprintf("DB -> Reconnect attempt %d of 3...", $attempt));
+        $SQL->disconnect() if $SQL;
+        $SQL = undef;
+        db_init();
+        if ($SQL && $SQL->ping()) {
+            do_log("DB -> Reconnected successfully");
+            return 1;
+        }
+        sleep(5);
+    }
+    do_log("DB -> Could not reconnect to MySQL after 3 attempts, shutting down");
+    die "FATAL: MySQL reconnect failed after 3 attempts\n";
+}
+
+sub db_check {
+    # Call before any SQL operation. Reconnects if the connection has gone away.
+    return unless $SQL;
+    unless ($SQL->ping()) {
+        do_log("DB -> Connection lost (ping failed), reconnecting...");
+        db_reconnect();
+    }
 }
 
 sub game_init {
@@ -310,10 +340,7 @@ sub game_minute {
 	}
 
 	#Check SQL status, reconnect if needed
-	if(!$SQL) {
-              if ($OPTIONS{DEBUG}) { do_log("Error -> MySQL Database connection lost") }
-              db_init();   
-        }
+	db_check();
 }
 
 sub game_action {
@@ -556,6 +583,12 @@ sub assign_team {
 
 	if (!$SQL) {
 		if ($OPTIONS{DEBUG}) { do_log("ERROR -> assign_team called with no DB connection") }
+		player_msg($source,"ERROR: Database unavailable, team assignment failed");
+		return;
+	}
+	db_check();
+	if (!$SQL) {
+		if ($OPTIONS{DEBUG}) { do_log("ERROR -> assign_team: DB reconnect failed") }
 		player_msg($source,"ERROR: Database unavailable, team assignment failed");
 		return;
 	}
