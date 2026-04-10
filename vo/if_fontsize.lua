@@ -1,3 +1,0 @@
--- if_fontsize.lua (csctf plugin stub)
--- Required by vo/if_hud.lua for all installed plugins.
--- csctf does not override font sizes, so this file is intentionally empty.

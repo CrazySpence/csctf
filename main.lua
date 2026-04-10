@@ -120,5 +120,4 @@ function csctf.Client_stop()
    end
 end
 
-csctf.dofile(getsystemnote(290981))              -- load cached version immediately so plugin is functional at startup
 RegisterEvent(csctf.download,"PLAYER_ENTERED_GAME") -- download fresh version on login
