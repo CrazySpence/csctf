@@ -5,7 +5,7 @@ csctf = {}
 --TCP and HTTP stuff
 local HTTP,json,b64 = dofile("httplib/httplib.lua")
 local TCP = dofile("tcpsock.lua") -- the one in httplib wasnt working, I or someone mustve changed something and forgot
-csctf.server = "http://voupr.spenced.com/csctf/0.2.0/current.lua" -- Current running game version goes here (for now)
+csctf.server = "http://voupr.spenced.com/csctf/current.lua" -- Current running game version goes here (for now)
 csctfClient = nil
 ctffile = ""
 

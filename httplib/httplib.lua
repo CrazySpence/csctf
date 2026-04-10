@@ -349,12 +349,6 @@ function HTTP.new ()
                 
         if not (string.match(u, "http://(.-)/(.*)$")) then u = u..'/' end
         response.url.host, response.url.path = string.match(u, "http://(.-)/(.*)$") -- Thanks to Miharu
-        if not response.url.host then
-            -- URL does not match http:// scheme (e.g. https:// redirect) — bail cleanly
-            -- callcb is not defined yet at this point in urlopen, so use cb directly
-            cb(makeerrorresponse(0, "Unsupported URL scheme (only http:// is supported): " .. tostring(u)))
-            return
-        end
         if string.match(response.url.host, ':') then
             response.url.host, response.url.port = string.match(response.url.host, "(.*):(.*)$")
         else
@@ -622,12 +616,7 @@ function HTTP.new ()
                     if http.__links_followed > http.__max_links_follow then
                         callcb(makeerrorresponse(0, "Followed too many locations."))
                     else
-                        local location = response.headers.get('Location')
-                        if location then
-                            http.urlopen(location, function(x) callcb(x) end)
-                        else
-                            callcb(makeerrorresponse(0, "Redirect with no Location header"))
-                        end
+                        http.urlopen(response.headers.get('Location'), function(x) callcb(x) end)
                     end
                 else
                     callcb(resp)
