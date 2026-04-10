@@ -611,17 +611,20 @@ sub assign_team {
 			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
 		}
 	} else {
-		#No team, check team count and add new player
-		if($CTFSTATE{TeamOnePlayers} > $CTFSTATE{TeamTwoPlayers}) {
+		#No team — balance based on total DB assignments, not just who is online right now
+		my $t1count = $SQL->selectrow_array("SELECT COUNT(*) FROM player_stat WHERE team=1") // 0;
+		my $t2count = $SQL->selectrow_array("SELECT COUNT(*) FROM player_stat WHERE team=2") // 0;
+		if ($OPTIONS{DEBUG}) { do_log(sprintf("ASSIGN -> DB team counts: Team 1=%d Team 2=%d", $t1count, $t2count)) }
+		if($t1count > $t2count) {
 			$$source{team} = 2;
 			$CTFSTATE{TeamTwoPlayers}++;
 			player_msg($source,"SETTEAM 2");
 			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
 		} else {
-			$$source{team} = 1;	
+			$$source{team} = 1;
 			$CTFSTATE{TeamOnePlayers}++;
 			player_msg($source,"SETTEAM 1");
-            player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
 		}
 		#add player and team assignment to table
 		$query = $SQL->prepare("INSERT INTO player_stat SET name=?,team=?");
