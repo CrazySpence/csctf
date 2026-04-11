@@ -18,17 +18,8 @@ $SIG{PIPE} = sub { warn "ERROR -> Broken pipe detected\n" };
 
 require "./log.pl";
 
-my %OPTIONS = (
-        DD_BUILD    => "0.2.0",
-        MIN_VERSION => "0.2.0",
-        DEBUG       => 1,
-        DB_HOST     => "localhost",
-        DB_PORT     => 3306,
-        DB_USER     => "",
-        DB_PASS     => "",
-        DB_DB       => "",
-        STATE_FILE  => "./ctfstate.dat",
-    );
+our %OPTIONS;
+require "./options.pl";
 
 my $SOCKET; #Main Socket
 my $SELECT;
