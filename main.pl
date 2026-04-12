@@ -144,9 +144,9 @@ sub bounty_reset {
     my $nickname = $_[0];
     my $player = getplayer($nickname);
     if ($player) {
-        $$player{bounty} = 0;
+        $$player{bounty} = 100;
     }
-    $CTFSTATE{BountyTable}{$nickname} = 0;
+    $CTFSTATE{BountyTable}{$nickname} = 100;
 }
 
 sub carry_history_add {
@@ -902,7 +902,7 @@ sub register_player #\%source
 
   $$source{ping}   = time;
   $$source{pk}     = 0;
-  $$source{bounty} = $CTFSTATE{BountyTable}{$$source{nickname}} // 0;
+  $$source{bounty} = $CTFSTATE{BountyTable}{$$source{nickname}} // 100;
   push @CPOOL, $source;
   player_msg($source,"Logged In.");
   assign_team($source);
