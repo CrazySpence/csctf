@@ -28,6 +28,7 @@ my @CPOOL;  #Connection pool hashes
 my $SQL; #Database connection handler
 my $BACKUP_COUNTER = 0;
 my %PENDING_VERIFY; # "$handle" => Event timer (waiting for VERSION response)
+my %RECENT_KILLS;   # "victim:killer" => timestamp, used to deduplicate ACTION 2 reports
 
 my %CTFSTATE = (
 	TeamOnePlayers    => 0,
@@ -319,6 +320,11 @@ sub game_minute {
 		}
 	}
 
+	# Prune stale recent-kills dedup entries (older than 10 seconds)
+	for my $key (keys %RECENT_KILLS) {
+		delete $RECENT_KILLS{$key} if (time - $RECENT_KILLS{$key}) > 10;
+	}
+
 	# Periodic backup rotation every 5 minutes
 	$BACKUP_COUNTER++;
 	if ($BACKUP_COUNTER >= 5) {
@@ -353,19 +359,35 @@ sub game_action {
 	}
 	
 	if ($event eq "2") {
-		#PK Detected — $$source is the victim, arguments[1] is the killer
+		#PK Detected — arguments[0] is victim, arguments[1] is killer
+		#PLAYER_DIED fires on all clients in sector so multiple players may report
+		#the same kill — deduplicate within a 5-second window
 		@arguments = split(/\:+/,$message);
-		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s killed %s",$arguments[1],$arguments[0])) }
-		$$source{pk} = $$source{pk} + 1;
-		my $victim_bounty = $$source{bounty} // 0;
-		bounty_reset($$source{nickname});
-		my $killer = getplayer($arguments[1]);
-		if ($killer) {
-			$$killer{bounty} = ($$killer{bounty} // 0) + 100;
-			stat_add($arguments[1], 'pks', 1);
-			stat_add($arguments[1], 'total_score', $victim_bounty) if $victim_bounty > 0;
+		my $victim_name = $arguments[0];
+		my $killer_name = $arguments[1];
+		if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s killed %s", $killer_name, $victim_name)) }
+
+		my $kill_key = "$victim_name:$killer_name";
+		if (exists $RECENT_KILLS{$kill_key} && (time - $RECENT_KILLS{$kill_key}) < 5) {
+			if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> Duplicate kill report for %s, ignoring", $kill_key)) }
+		} else {
+			$RECENT_KILLS{$kill_key} = time;
+
+			# Look up victim by name — $$source may be any witness, not necessarily the victim
+			my $victim = getplayer($victim_name);
+			my $victim_bounty = $victim ? ($$victim{bounty} // 0)
+			                           : ($CTFSTATE{BountyTable}{$victim_name} // 0);
+			bounty_reset($victim_name);
+
+			my $killer = getplayer($killer_name);
+			if ($killer) {
+				$$killer{bounty} = ($$killer{bounty} // 0) + 100;
+				stat_add($killer_name, 'pks', 1);
+				stat_add($killer_name, 'total_score', $victim_bounty) if $victim_bounty > 0;
+				if ($OPTIONS{DEBUG}) { do_log(sprintf("ACTION -> %s awarded %d bounty score (victim had %d)", $killer_name, $victim_bounty, $victim_bounty)) }
+			}
+			state_save();
 		}
-		state_save();
 	}
 	
 	if ($event eq "3") {
