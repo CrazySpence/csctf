@@ -508,16 +508,16 @@ sub game_action {
             if($$source{nickname} ne $CTFSTATE{TeamOneCarrier}) { return; }
 			global_msg(sprintf("%s has captured Team 2's flag!",$$source{nickname}));
 			$CTFSTATE{TeamOneScore}++;
-			$$source{bounty} = ($$source{bounty} // 0) + 500;
+			$$source{bounty} = ($$source{bounty} // 0) + 50;
 			stat_add($$source{nickname}, 'captures', 1);
-			stat_add($$source{nickname}, 'total_score', 500);
+			stat_add($$source{nickname}, 'total_score', 50);
 			for my $name (@{$CTFSTATE{TeamOneCarryHistory}}) {
 				next if lc($name) eq lc($$source{nickname});
 				my $helper = getplayer($name);
-				if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 250; }
-				else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 250; }
+				if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 25; }
+				else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 25; }
 				stat_add($name, 'assists', 1);
-				stat_add($name, 'total_score', 250);
+				stat_add($name, 'total_score', 25);
 			}
 			carry_history_clear(1);
 			$CTFSTATE{TeamOneCarrier}    = "";
@@ -529,16 +529,16 @@ sub game_action {
         	if($$source{nickname} ne $CTFSTATE{TeamTwoCarrier}) { return; }
             global_msg(sprintf("%s has captured Team 1's flag!",$$source{nickname}));
             $CTFSTATE{TeamTwoScore}++;
-            $$source{bounty} = ($$source{bounty} // 0) + 500;
+            $$source{bounty} = ($$source{bounty} // 0) + 50;
             stat_add($$source{nickname}, 'captures', 1);
-            stat_add($$source{nickname}, 'total_score', 500);
+            stat_add($$source{nickname}, 'total_score', 50);
             for my $name (@{$CTFSTATE{TeamTwoCarryHistory}}) {
                 next if lc($name) eq lc($$source{nickname});
                 my $helper = getplayer($name);
-                if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 250; }
-                else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 250; }
+                if ($helper) { $$helper{bounty} = ($$helper{bounty} // 0) + 25; }
+                else { $CTFSTATE{BountyTable}{$name} = ($CTFSTATE{BountyTable}{$name} // 0) + 25; }
                 stat_add($name, 'assists', 1);
-                stat_add($name, 'total_score', 250);
+                stat_add($name, 'total_score', 25);
             }
             carry_history_clear(2);
 			$CTFSTATE{TeamTwoCarrier}    = "";
