@@ -48,13 +48,14 @@ my %CTFSTATE = (
 	BountyTable         => {},
 	TeamOneCarryHistory => [],
 	TeamTwoCarryHistory => [],
+	PendingChallenge    => {},
 );
 
 sub state_save {
     my %save;
     # Persist everything except live player counts — those reset as clients reconnect
     for my $key (keys %CTFSTATE) {
-        next if $key eq 'TeamOnePlayers' || $key eq 'TeamTwoPlayers';
+        next if $key eq 'TeamOnePlayers' || $key eq 'TeamTwoPlayers' || $key eq 'PendingChallenge';
         $save{$key} = $CTFSTATE{$key};
     }
     store(\%save, $OPTIONS{STATE_FILE})
@@ -427,9 +428,39 @@ sub game_action {
 					return;
 				}
 				if($CTFSTATE{TeamOneCarrier} ne "") {
-					do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
-					player_msg($source,"RESETFLAG");
-                   player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+					my $carrier_src = getplayer($CTFSTATE{TeamOneCarrier});
+					if($carrier_src) {
+						do_log(sprintf("PUNK -> Possible flag capture attempt by %s in %s, verifying carrier hold for %s",
+							$$source{nickname}, $$source{sector}, $CTFSTATE{TeamOneCarrier}));
+						player_msg($carrier_src, sprintf("VERIFYCARRIER %s", $CTFSTATE{TeamOneFlagItem}));
+						$CTFSTATE{PendingChallenge}{1} = {
+							carrier           => $CTFSTATE{TeamOneCarrier},
+							challenger        => $$source{nickname},
+							challenger_sector => $$source{sector},
+							flagitem          => $CTFSTATE{TeamOneFlagItem},
+						};
+						$CTFSTATE{PendingChallenge}{1}{timer} = Event->timer(
+							at => time + 5,
+							cb => sub {
+								if(exists $CTFSTATE{PendingChallenge}{1}) {
+									my $ch = $CTFSTATE{PendingChallenge}{1};
+									do_log(sprintf("PUNK -> Carrier verify timed out for %s, denying %s",
+										$ch->{carrier}, $ch->{challenger}));
+									my $chal = getplayer($ch->{challenger});
+									if($chal) {
+										player_msg($chal, "RESETFLAG");
+										player_msg($chal, sprintf("FLAGITEM %s", $ch->{flagitem}));
+									}
+									delete $CTFSTATE{PendingChallenge}{1};
+								}
+							}
+						);
+					} else {
+						do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",
+							$$source{nickname}, $$source{sector}));
+						player_msg($source,"RESETFLAG");
+						player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamOneFlagItem}));
+					}
 					return;
 				}
 				if($$source{sector} ne $CTFSTATE{TeamOneFlagSector}) {
@@ -465,10 +496,40 @@ sub game_action {
 					return;
                 }
 				if($CTFSTATE{TeamTwoCarrier} ne "") {
-                	do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",$$source{nickname},$$source{sector}));
-					player_msg($source,"RESETFLAG");
-                    player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
-                    return;
+					my $carrier_src = getplayer($CTFSTATE{TeamTwoCarrier});
+					if($carrier_src) {
+						do_log(sprintf("PUNK -> Possible flag capture attempt by %s in %s, verifying carrier hold for %s",
+							$$source{nickname}, $$source{sector}, $CTFSTATE{TeamTwoCarrier}));
+						player_msg($carrier_src, sprintf("VERIFYCARRIER %s", $CTFSTATE{TeamTwoFlagItem}));
+						$CTFSTATE{PendingChallenge}{2} = {
+							carrier           => $CTFSTATE{TeamTwoCarrier},
+							challenger        => $$source{nickname},
+							challenger_sector => $$source{sector},
+							flagitem          => $CTFSTATE{TeamTwoFlagItem},
+						};
+						$CTFSTATE{PendingChallenge}{2}{timer} = Event->timer(
+							at => time + 5,
+							cb => sub {
+								if(exists $CTFSTATE{PendingChallenge}{2}) {
+									my $ch = $CTFSTATE{PendingChallenge}{2};
+									do_log(sprintf("PUNK -> Carrier verify timed out for %s, denying %s",
+										$ch->{carrier}, $ch->{challenger}));
+									my $chal = getplayer($ch->{challenger});
+									if($chal) {
+										player_msg($chal, "RESETFLAG");
+										player_msg($chal, sprintf("FLAGITEM %s", $ch->{flagitem}));
+									}
+									delete $CTFSTATE{PendingChallenge}{2};
+								}
+							}
+						);
+					} else {
+						do_log(sprintf("PUNK -> %s tried to capture a flag in %s while one is already captured",
+							$$source{nickname}, $$source{sector}));
+						player_msg($source,"RESETFLAG");
+						player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
+					}
+					return;
                 }
                 if($$source{sector} ne $CTFSTATE{TeamTwoFlagSector}) {
                 	do_log(sprintf("PUNK -> %s in %s tried to capture flag FLAG: %s",$$source{nickname},$$source{sector},$CTFSTATE{TeamTwoFlagSector}));
@@ -553,7 +614,64 @@ sub game_action {
 		team_msg($$source{team},$message);
 	}
 
-	if($event eq "8") { #Carrier verification response after server restart
+	if($event eq "8") { #Carrier verification response
+		# --- PendingChallenge path (PUNK carrier-verify) ---
+		my $team = $$source{team};
+		if(exists $CTFSTATE{PendingChallenge}{$team}) {
+			my $ch = $CTFSTATE{PendingChallenge}{$team};
+			if(lc($ch->{carrier}) eq lc($$source{nickname})) {
+				my $challenger_src = getplayer($ch->{challenger});
+				if($message eq "1") {
+					# Carrier genuinely has the flag — PUNK the challenger
+					do_log(sprintf("PUNK -> Hold verified, %s tried to capture a flag in %s while one is already captured",
+						$ch->{challenger}, $ch->{challenger_sector}));
+					if($team == 1) { $CTFSTATE{TeamOneTimeout} = time; }
+					else            { $CTFSTATE{TeamTwoTimeout} = time; }
+					if($challenger_src) {
+						player_msg($challenger_src, "RESETFLAG");
+						player_msg($challenger_src, sprintf("FLAGITEM %s", $ch->{flagitem}));
+					}
+				} else {
+					# Carrier does not hold the flag — server missed the ACTION 5 drop
+					do_log(sprintf("PUNK -> Flag carrier hold empty, removing carrying flag from %s",
+						$ch->{carrier}));
+					if($team == 1) {
+						$CTFSTATE{TeamOneCarrier} = "";
+						carry_history_clear(1);
+					} else {
+						$CTFSTATE{TeamTwoCarrier} = "";
+						carry_history_clear(2);
+					}
+					# If challenger is a different player and still connected, process their pickup now.
+					# (Same-player case: VERIFYCARRIER handler in current.lua already cleared
+					#  hasEnemyFlag; the next INVENTORY_ADD re-sends ACTION 4 cleanly.)
+					if(lc($ch->{carrier}) ne lc($ch->{challenger}) && $challenger_src) {
+						if($team == 1) {
+							global_msg(sprintf("%s has stolen Team 2's flag!", $ch->{challenger}));
+							$CTFSTATE{TeamOneFlagItem}   = $ch->{flagitem};
+							$CTFSTATE{TeamOneFlagSector} = $ch->{challenger_sector};
+							$CTFSTATE{TeamOneCarrier}    = $ch->{challenger};
+							carry_history_add(1, $ch->{challenger});
+							team_msg(1, sprintf("FLAGITEM %s", $ch->{flagitem}));
+							$CTFSTATE{TeamOneTimeout} = time;
+						} else {
+							global_msg(sprintf("%s has stolen Team 1's flag!", $ch->{challenger}));
+							$CTFSTATE{TeamTwoFlagItem}   = $ch->{flagitem};
+							$CTFSTATE{TeamTwoFlagSector} = $ch->{challenger_sector};
+							$CTFSTATE{TeamTwoCarrier}    = $ch->{challenger};
+							carry_history_add(2, $ch->{challenger});
+							team_msg(2, sprintf("FLAGITEM %s", $ch->{flagitem}));
+							$CTFSTATE{TeamTwoTimeout} = time;
+						}
+					}
+					state_save();
+				}
+				$ch->{timer}->cancel() if $ch->{timer};
+				delete $CTFSTATE{PendingChallenge}{$team};
+				return;
+			}
+		}
+		# --- Existing reconnect-verify path ---
 		if($$source{team} == 1 && $CTFSTATE{TeamOneCarrier} eq $$source{nickname}) {
 			if($message eq "0") {
 				do_log(sprintf("STATE -> %s no longer has the flag, resetting Team 1 flag", $$source{nickname}));
