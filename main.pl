@@ -758,11 +758,21 @@ sub assign_team {
 			player_msg($source,sprintf("FLAGITEM %s",$CTFSTATE{TeamTwoFlagItem}));
 		}
 	} else {
-		#No team — balance based on total DB assignments, not just who is online right now
+		#No team — balance based on total DB assignments weighted by current score
 		my $t1count = $SQL->selectrow_array("SELECT COUNT(*) FROM player_stat WHERE team=1") // 0;
 		my $t2count = $SQL->selectrow_array("SELECT COUNT(*) FROM player_stat WHERE team=2") // 0;
-		if ($OPTIONS{DEBUG}) { do_log(sprintf("ASSIGN -> DB team counts: Team 1=%d Team 2=%d", $t1count, $t2count)) }
-		if($t1count > $t2count) {
+		# Score-weighted effective size: score can tip a tied count but cannot
+		# override any actual player count difference (weight cap 0.9 < 1.0).
+		my $total_score = $CTFSTATE{TeamOneScore} + $CTFSTATE{TeamTwoScore};
+		my ($sw1, $sw2) = (0, 0);
+		if ($total_score > 0) {
+			$sw1 = ($CTFSTATE{TeamOneScore} / $total_score) * 0.9;
+			$sw2 = ($CTFSTATE{TeamTwoScore} / $total_score) * 0.9;
+		}
+		my $eff1 = $t1count + $sw1;
+		my $eff2 = $t2count + $sw2;
+		if ($OPTIONS{DEBUG}) { do_log(sprintf("ASSIGN -> DB team counts: Team 1=%d Team 2=%d | Scores: T1=%d T2=%d | Eff: T1=%.3f T2=%.3f", $t1count, $t2count, $CTFSTATE{TeamOneScore}, $CTFSTATE{TeamTwoScore}, $eff1, $eff2)) }
+		if($eff1 > $eff2) {
 			$$source{team} = 2;
 			$CTFSTATE{TeamTwoPlayers}++;
 			player_msg($source,"SETTEAM 2");
